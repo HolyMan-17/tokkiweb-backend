@@ -1,16 +1,18 @@
 import express from 'express';
 import cors from 'cors';
 import * as db from './config/db.js';
+import apiRouter from './routes/index.js';
 
 const app = express();
 
 app.use(cors());                      // Allows your React frontend to connect to this API
 app.use(express.json());              // Allows your server to read JSON sent in request bodies
 app.use(express.urlencoded({ extended: true })); // Parses URL-encoded form data
+app.use('/api', apiRouter);
 
 // 2. Health check route (verifies API is online)
 app.get('/app/health', (req, res) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date() });
+    res.status(200).json({ status: 'ok', message: "Kill yourself as soon as possible" });
 });
 
 app.get('/clients', async (req, res) => {
