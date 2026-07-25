@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS tokki_shop.clients
     client_id serial NOT NULL,
     name character varying(100) NOT NULL,
     last_name character varying(100) NOT NULL,
-    tlf_num character varying(20) NOT NULL,
+    tlf_num character varying(20) UNIQUE NOT NULL,
     PRIMARY KEY (client_id)
 );
 
