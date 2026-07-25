@@ -77,8 +77,22 @@ export const productsController = {
         try{
             const productId = req.params.product_id;
             const {product_name, product_price, product_description, qty_available} = req.body;
-    
-            if(!product_name && !product_price && !product_description && !qty_available){
+            
+            const queryArchive = await db.query('SELECT is_archived FROM tokki_shop.products WHERE product_id = $1', [productId]);
+
+            if (queryArchive.rows.length === 0){
+                return res.status(404).json({success: "false", message: "Product was not found."});
+            }
+
+            const is_archived = queryArchive.rows[0].is_archived;
+
+            if(is_archived){
+                return res.status(401).json({success: false, message: "Product is archived."});
+            }
+            
+
+            if(product_name === undefined && product_price === undefined && product_description === undefined && 
+                qty_available === undefined){
                 return res.status(400).json({success: false, message: "At least 1 product field needs to be updated."})
             }
 
@@ -130,7 +144,7 @@ export const productsController = {
             
             const deleteQuery = 
             `
-            UPDATE tokki_shop.products SET is_archived = TRUE WHERE product_id = $1;
+            UPDATE tokki_shop.products SET is_archived = TRUE, qty_available = 0, in_stock = FALSE WHERE product_id = $1;
             `
             await dbClient.query('BEGIN');
             const resQuery = await dbClient.query(deleteQuery, [productId]);
