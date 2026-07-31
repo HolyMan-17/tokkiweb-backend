@@ -3,7 +3,7 @@ CREATE SCHEMA IF NOT EXISTS tokki_shop;
 
 BEGIN;
 
--- 2. CLIENTS
+-- 2. CLIENTS (Store buyer contact details for guest checkout)
 CREATE TABLE IF NOT EXISTS tokki_shop.clients
 (
     client_id serial NOT NULL,
@@ -13,22 +13,17 @@ CREATE TABLE IF NOT EXISTS tokki_shop.clients
     PRIMARY KEY (client_id)
 );
 
--- 3. USERS 
+-- 3. USERS (Maps Clerk User Accounts to internal system roles)
 CREATE TABLE IF NOT EXISTS tokki_shop.users
 (
-    user_id serial NOT NULL,
-    client_id integer,
-    email text NOT NULL,
-    password text NOT NULL,
-    user_type character varying NOT NULL,
+    clerk_user_id character varying(255) NOT NULL,
+    email character varying(255) NOT NULL,
+    user_type character varying(50) NOT NULL DEFAULT 'shop_owner',
     created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_login timestamp with time zone,
-    PRIMARY KEY (user_id),
-    UNIQUE (client_id),
-    FOREIGN KEY (client_id) REFERENCES tokki_shop.clients(client_id) ON DELETE SET NULL
+    PRIMARY KEY (clerk_user_id)
 );
 
--- 4. ORDERS
+-- 4. ORDERS (Tracks store orders and optional processing admin)
 CREATE TABLE IF NOT EXISTS tokki_shop.orders
 (
     order_id serial NOT NULL,
@@ -36,11 +31,14 @@ CREATE TABLE IF NOT EXISTS tokki_shop.orders
     delivery_type character varying NOT NULL,
     total_amount numeric(9, 2) NOT NULL,
     payment_method character varying NOT NULL,
+    processed_by character varying(255),
+    created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (order_id),
-    FOREIGN KEY (client_id) REFERENCES tokki_shop.clients(client_id) ON DELETE RESTRICT
+    FOREIGN KEY (client_id) REFERENCES tokki_shop.clients(client_id) ON DELETE RESTRICT,
+    FOREIGN KEY (processed_by) REFERENCES tokki_shop.users(clerk_user_id) ON DELETE SET NULL
 );
 
--- 5. PRODUCTS
+-- 5. PRODUCTS (Inventory catalog)
 CREATE TABLE IF NOT EXISTS tokki_shop.products
 (
     product_id serial NOT NULL,
@@ -53,7 +51,7 @@ CREATE TABLE IF NOT EXISTS tokki_shop.products
     PRIMARY KEY (product_id)
 );
 
--- 6. ORDER ITEMS
+-- 6. ORDER ITEMS (Historic line items for each order)
 CREATE TABLE IF NOT EXISTS tokki_shop.order_items (
     order_item_id SERIAL PRIMARY KEY,
     order_id INTEGER REFERENCES tokki_shop.orders(order_id) ON DELETE CASCADE,
