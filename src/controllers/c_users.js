@@ -60,7 +60,16 @@ export const userController = {
     },
 
     async getUser(req, res, next){
-        
+        try{
+            const userId = req.params.user_id;
+            const getQuery = `SELECT user_id, email, user_type, created_at, last_login FROM tokki_shop.users WHERE user_id = $1;`
+            const resQuery = await db.query(getQuery, [userId]);
+            if(resQuery.rows.length === 0){
+                return res.status(409).json({success: true, message: "The provided user id does not exist."})
+            }
+        }catch(err){
+            next(err);
+        }
     }
 
 }
