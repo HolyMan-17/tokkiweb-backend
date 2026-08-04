@@ -73,7 +73,7 @@ export const ordersController = {
                     VALUES($1, $2, $3, $4, $5)`, [orderQuery.rows[0].order_id, product.id, product.name, product.ordered_qty, product.price])
             }
             await dbClient.query('COMMIT');
-            return res.status(201).json({success:true, order_id: orderQuery.rows[0].order_id, total_amount, message:"Order has been successfully created."})
+            return res.status(201).json({success:true, order_id: orderQuery.rows[0].order_id, order_amount: total_amount, message:"Order has been successfully created."})
         }catch(err){
             if(dbClient){
                 await dbClient.query('ROLLBACK');
