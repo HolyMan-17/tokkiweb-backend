@@ -129,6 +129,47 @@ export const ordersController = {
     },
     
     async getSingleOrder(req, res, next){
-        const order_id = req.params.order_id;
+        try{
+            const order_id = req.params.order_id;
+            const getOrder = `
+                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount,
+                            o_i.product_name, 
+                            o_i.product_qty, o_i.product_price,
+                            (o_i.product_qty * o_i.product_price) AS product_total,
+                            ord.created_at
+                            FROM tokki_shop.orders as ord 
+                            INNER JOIN tokki_shop.clients as c 
+                            ON ord.client_id=c.client_id 
+                            INNER JOIN tokki_shop.order_items as o_i 
+                            ON o_i.order_id=ord.order_id 
+                            WHERE ord.order_id = $1;
+                            `;
+            const orderQuery = await db.query(getOrder, [order_id]);
+
+            if(orderQuery.rows.length === 0){
+                return res.status(404).json({success: false, message: "Order doesn't exist."})
+            }
+
+            const data = {
+                order_id: orderQuery.rows[0].order_id,
+                client: {
+                    name: orderQuery.rows[0].name,
+                    last_name: orderQuery.rows[0].last_name,
+                    tlf_num: orderQuery.rows[0].tlf_num
+                },
+                total_amount: orderQuery.rows[0].total_amount,
+                created_at: orderQuery.rows[0].created_at,
+                items: orderQuery.rows.map(row => ({
+                    product_name: row.product_name,
+                    product_qty: row.product_qty,
+                    product_price: row.product_price,
+                    product_total: row.product_total
+                }))
+            };
+
+            return res.status(200).json({success: true, data: data, message: "Order retrieved."})
+        }catch(err){
+            next(err);
+        }
     }
 }

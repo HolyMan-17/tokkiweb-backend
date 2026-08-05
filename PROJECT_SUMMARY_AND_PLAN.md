@@ -12,6 +12,7 @@ This document summarizes all architectural decisions, database schemas, complete
   - `src/config/db.js`: PostgreSQL connection pool adapter with query execution logging and 5-second connection leak diagnostics.
   - `src/routes/`: Route declarations mapping URL endpoints to controllers.
   - `src/controllers/`: Express handlers reading HTTP requests, performing validation, executing direct SQL queries via database client transactions, and returning standardized JSON.
+  - `src/utils/validate.js`: Shared validation helpers (currently `normalizeAndValidatePhone`) reused across controllers.
   - `src/schema/tokki_schema.sql`: Authoritative PostgreSQL schema file for the `tokki_shop` schema.
 
 ---
@@ -84,16 +85,17 @@ Preserves historical item names and prices at time of purchase.
 
 ---
 
-## 🛒 5. Next Feature Plan: Orders API (`/api/orders`)
+## 🛒 5. Completed & Verified Features: Orders API (`/api/orders`)
 
-### Order Creation & Checkout Flow (`POST /api/orders`)
+### `POST /api/orders` — Order Creation & Checkout Flow
 **Payload from Frontend / Body:**
 ```json
 {
-  "buyer": {
+  "client_info": {
     "name": "Jane",
     "last_name": "Doe",
-    "tlf_num": "+12345678"
+    "country_code": "+58",
+    "tlf_num": "041469996703"
   },
   "delivery_type": "standard",
   "payment_method": "credit_card",
@@ -104,27 +106,44 @@ Preserves historical item names and prices at time of purchase.
 }
 ```
 
-**Transaction Sequence (`BEGIN` -> `COMMIT` / `ROLLBACK`):**
-1. **Find/Create Client (Upsert):**
-   - Query `tokki_shop.clients` WHERE `tlf_num = buyer.tlf_num`.
-   - If found: Use existing `client_id`.
-   - If not found: `INSERT INTO tokki_shop.clients` ➡️ access generated `client_id` via `newClientResult.rows[0].client_id`.
-2. **Validate Products & Calculate Total:**
-   - Loop through `items`.
-   - Query `tokki_shop.products` for current `product_name`, `product_price`, `qty_available`, `is_archived`. *(Database is source of truth for prices).*
-   - Reject if `is_archived = true` or `qty_available < product_qty`.
-   - Deduct `product_qty` from `qty_available` and update `in_stock = (qty_available > 0)`.
-   - Accumulate `total_amount += product_price * product_qty`.
-3. **Insert Order Header:**
-   - `INSERT INTO tokki_shop.orders` (`client_id`, `delivery_type`, `total_amount`, `payment_method`, `processed_by`).
-   - Get generated `order_id` via `RETURNING order_id`.
-4. **Insert Order Items:**
-   - Loop through items and `INSERT INTO tokki_shop.order_items` (`order_id`, `product_id`, `product_name`, `product_qty`, `product_price`).
-5. **Commit & Return:**
-   - `COMMIT` transaction and return `201 Created` with full order summary.
+**Phone validation:** `normalizeAndValidatePhone(country_code, tlf_num)` in `src/utils/validate.js`.
+- Local form (`041469996703` + `country_code`) or full international (`+584146996703`) are both accepted.
+- Output is always normalized & stored as **E.164** (`+584146996703`) — compatible with WhatsApp for the shop owner's follow-up flow.
+- Rejects empty, malformed, or non-international numbers with `400`.
 
-### Additional Planned Order Endpoints
-* **`GET /api/orders`**: List all orders for administrative dashboard.
-* **`GET /api/orders/:order_id`**: Get single order header + associated line items.
-* **`GET /api/orders/client/:client_id`**: List order history for a specific client.
-* **`DELETE /api/orders/:order_id`**: Cancel an order, restore product quantities to `tokki_shop.products`, set `in_stock = true`, and remove the order record inside a transaction.
+**Validation performed (in order):**
+1. Presence of `client_info`, `delivery_type`, `payment_method`, `items`.
+2. Client name/last_name/tlf_num present.
+3. Phone number is valid international format.
+4. `delivery_type` / `payment_method` truthy; `items` is a non-empty array.
+5. Per item: product exists (404), `product_qty > 0` (400), stock sufficient (400).
+
+**Transaction Sequence (single `BEGIN` -> `COMMIT` / `ROLLBACK`):**
+1. **Find/Create Client (Upsert):**
+   - Query `tokki_shop.clients` WHERE `tlf_num = <normalized phone>`.
+   - If found: use existing `client_id`.
+   - If not found: `INSERT INTO tokki_shop.clients` in a separate transaction and use generated `client_id`.
+2. **Validate Products & Deduct Stock:**
+   - Loop through `items`, `SELECT ... FOR UPDATE` each product row (locks against concurrent archive/stock updates — prevents overselling).
+   - Reject if missing (404), `qty <= 0` (400), or `qty_available < product_qty` (400) — early failures `ROLLBACK` the whole order transaction.
+   - Deduct `product_qty` from `qty_available`, recalculating `in_stock = (qty_available > 0)`.
+   - Accumulate `total_amount += product_price * product_qty` (database is source of truth for prices).
+3. **Insert Order Header:** `INSERT INTO tokki_shop.orders (...)` -> get `order_id` via `RETURNING order_id`. `processed_by` is `NULL` for now (Clerk not yet wired).
+4. **Insert Order Items:** Loop through items and insert snapshotted `product_name`, `product_qty`, `product_price` into `tokki_shop.order_items`.
+5. **Commit & Return:** `COMMIT` and return `201 Created` with order summary (`order_id`, `total_amount`, `items`) in the standard `{ success, data, message }` envelope.
+
+### `GET /api/orders` — List All Orders
+Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amount`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`.
+
+### `GET /api/orders/:order_id` — Single Order Details
+Returns the order header + client info, plus each line item (snapshot `product_name`, `product_qty`, `product_price`, and computed `product_total = qty * price`). Controller folds the flat join rows into `{ header, client, items[] }`. 404 if the order doesn't exist.
+
+---
+
+## 🚧 6. Next Feature Plan: Remaining Orders Endpoints
+
+### `GET /api/orders/client/:client_id`
+List order history for a specific client.
+
+### `DELETE /api/orders/:order_id`
+Cancel an order: restore product quantities to `tokki_shop.products`, set `in_stock = true`, and remove the order record inside a transaction.

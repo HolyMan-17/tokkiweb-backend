@@ -214,3 +214,155 @@ Archives a product by setting `is_archived = true`, `qty_available = 0`, and `in
   "message": "Product ID is not valid."
 }
 ```
+
+---
+
+## 🛒 2. Orders API (`/api/orders`)
+
+### 2.1 Create Order (Checkout)
+
+Processes a full checkout: finds/creates the client, validates & deducts product stock, inserts the order header and line items inside a **single transaction** (`BEGIN` -> `COMMIT` / `ROLLBACK`).
+
+* **Method:** `POST`
+* **Path:** `/api/orders`
+* **Headers:** `Content-Type: application/json`
+
+#### Request Body
+```json
+{
+  "client_info": {
+    "name": "Jane",
+    "last_name": "Doe",
+    "country_code": "+58",
+    "tlf_num": "041469996703"
+  },
+  "delivery_type": "standard",
+  "payment_method": "credit_card",
+  "items": [
+    { "product_id": 1, "product_qty": 2 },
+    { "product_id": 2, "product_qty": 1 }
+  ]
+}
+```
+
+**Phone format (flexible, international):**
+* Local form: `country_code` (`+58`) + `tlf_num` (`041469996703`) -> normalized & stored as E.164 (`+584146996703`).
+* International form: `tlf_num` provided as a full E.164 number (`+584146996703`), in which case `country_code` may be omitted.
+* Rejects: empty/whitespace, embedded formatting chars, wrong length, malformed or missing `country_code` when `tlf_num` is not international, invalid E.164 (8-15 digits after `+`, first digit 1-9).
+
+#### Response `201 Created`
+```json
+{
+  "success": true,
+  "data": {
+    "order_id": 5,
+    "total_amount": "99.98",
+    "items": [
+      { "id": 1, "name": "Tokki Hoodie", "ordered_qty": 2, "price": "49.99" }
+    ]
+  },
+  "message": "Order has been successfully created."
+}
+```
+
+#### Response `400 Bad Request`
+Any of: missing `client_info`/`delivery_type`/`payment_method`/`items`; missing client name/last_name/tlf_num; invalid phone number; empty `items` or `items` not an array; `product_qty <= 0`; insufficient stock.
+```json
+{
+  "success": false,
+  "message": "Requested quantity is not available in the stock."
+}
+```
+
+#### Response `404 Not Found`
+```json
+{
+  "success": false,
+  "message": "Product was not found."
+}
+```
+
+**Concurrency note:** product rows are locked with `SELECT ... FOR UPDATE` inside the transaction, so stock can never be oversold by parallel orders.
+
+---
+
+### 2.2 List All Orders (Dashboard)
+
+Returns all orders with the buyer's info and a per-order distinct line-item count.
+
+* **Method:** `GET`
+* **Path:** `/api/orders`
+* **Request Body:** None
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "order_id": 5,
+      "name": "Jane",
+      "last_name": "Doe",
+      "tlf_num": "+584146996703",
+      "total_amount": "99.98",
+      "item_count": 2,
+      "created_at": "2026-08-04T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+#### Response `200 OK` (no orders yet)
+```json
+{
+  "success": true,
+  "message": "No orders have been placed."
+}
+```
+
+---
+
+### 2.3 Get Single Order (Full Details)
+
+Returns the order header, client info, and the full list of line items (name, quantity, unit price, and computed line total).
+
+* **Method:** `GET`
+* **Path:** `/api/orders/:order_id`
+* **URL Params:** `order_id` (integer, required)
+* **Request Body:** None
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "data": {
+    "order_id": 3,
+    "client": {
+      "name": "Jane",
+      "last_name": "Doe",
+      "tlf_num": "+584146996703"
+    },
+    "total_amount": "74.98",
+    "created_at": "2026-08-04T12:00:00.000Z",
+    "items": [
+      {
+        "product_name": "Tokki Hoodie",
+        "product_qty": 2,
+        "product_price": "49.99",
+        "product_total": "99.98"
+      }
+    ]
+  },
+  "message": "Order retrieved."
+}
+```
+
+#### Response `404 Not Found`
+```json
+{
+  "success": false,
+  "message": "Order doesn't exist."
+}
+```
+
+**Note:** item names/prices come from the `order_items` snapshot (as paid at purchase time), not the live `products` table.
