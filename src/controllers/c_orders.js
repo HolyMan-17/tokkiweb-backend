@@ -81,7 +81,15 @@ export const ordersController = {
                     VALUES($1, $2, $3, $4, $5)`, [orderQuery.rows[0].order_id, product.id, product.name, product.ordered_qty, product.price])
             }
             await dbClient.query('COMMIT');
-            return res.status(201).json({success:true, order_id: orderQuery.rows[0].order_id, order_amount: total_amount, message:"Order has been successfully created."})
+            return res.status(201).json({
+                success: true,
+                data: {
+                    order_id: orderQuery.rows[0].order_id,
+                    total_amount,
+                    items: ordered_items
+                },
+                message: "Order has been successfully created."
+            })
         }catch(err){
             if(dbClient){
                 await dbClient.query('ROLLBACK');
@@ -92,5 +100,35 @@ export const ordersController = {
                         await dbClient.release();
                     }
                 }
+    },
+
+    async getAllOrders(req, res, next){
+        try{
+            const getQuery = `
+                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount, 
+                            COUNT(o_i.product_id) AS item_count, ord.created_at
+                            FROM tokki_shop.orders as ord 
+                            INNER JOIN tokki_shop.clients as c 
+                            ON ord.client_id=c.client_id 
+                            INNER JOIN tokki_shop.order_items as o_i 
+                            ON o_i.order_id=ord.order_id 
+                            GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num
+                            ORDER BY ord.order_id DESC;
+                            `;
+            const resGet = await db.query(getQuery);
+
+            if(resGet.rows.length === 0){
+                return res.status(200).json({success: true, message:"No orders have been placed."});
+            }
+
+            return res.status(200).json({success: true, data: resGet.rows})
+
+        }catch(err){
+            next(err);
+        }
+    },
+    
+    async getSingleOrder(req, res, next){
+        const order_id = req.params.order_id;
     }
 }
