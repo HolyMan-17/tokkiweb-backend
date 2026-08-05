@@ -1,4 +1,5 @@
 import * as db from '../config/db.js';
+import { normalizeAndValidatePhone } from '../utils/validate.js';
 
 export const ordersController = {
     async createOrder(req, res, next) {
@@ -12,8 +13,15 @@ export const ordersController = {
             if(!client_info.name || !client_info.last_name || !client_info.tlf_num){
                 return res.status(400).json({success: false, message: "All client info fields are required."})
             }
+            const normalizedPhone = normalizeAndValidatePhone(client_info.country_code, client_info.tlf_num);
+            if(!normalizedPhone){
+                return res.status(400).json({success: false, message: "Phone number must be a valid international format."})
+            }
+            if(!delivery_type || !payment_method || !Array.isArray(items) || items.length === 0){
+                return res.status(400).json({success: false, message: "Valid delivery_type, payment_method, and items are required."})
+            }
             const queryClient = 'SELECT client_id FROM tokki_shop.clients WHERE tlf_num=$1';
-            const phone = [client_info.tlf_num];
+            const phone = [normalizedPhone];
             let client_id = '';
             const resquery = await dbClient.query(queryClient, phone);
             if(resquery.rows.length !== 0){
@@ -23,7 +31,7 @@ export const ordersController = {
                 const insertQuery = `INSERT INTO tokki_shop.clients(name, last_name, tlf_num) VALUES($1, $2, $3) RETURNING
                 client_id, name, last_name, tlf_num
                 `;
-                const values = [client_info.name, client_info.last_name, client_info.tlf_num];
+                const values = [client_info.name, client_info.last_name, normalizedPhone];
                 const newClientRes = await dbClient.query(insertQuery, values);
                 await dbClient.query('COMMIT');
                 client_id = newClientRes.rows[0].client_id;
