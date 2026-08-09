@@ -70,10 +70,10 @@ export const ordersController = {
             }
 
 
-            const orderValues = [client_id, delivery_type, total_amount, payment_method, null]
+            const orderValues = [client_id, delivery_type, total_amount, payment_method, null, 'pending']
             const orderQuery = await dbClient.query(`
-                INSERT INTO tokki_shop.orders(client_id, delivery_type, total_amount, payment_method, processed_by, created_at) 
-                VALUES($1, $2, $3, $4, $5, NOW()) RETURNING order_id`, orderValues);
+                INSERT INTO tokki_shop.orders(client_id, delivery_type, total_amount, payment_method, processed_by, status, created_at) 
+                VALUES($1, $2, $3, $4, $5, $6, NOW()) RETURNING order_id`, orderValues);
             
             for (const product of ordered_items){
                 const orderItemsQuery = await dbClient.query(`INSERT INTO 
@@ -105,14 +105,14 @@ export const ordersController = {
     async getAllOrders(req, res, next){
         try{
             const getQuery = `
-                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount, 
+                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount, ord.status,
                             COUNT(o_i.product_id) AS item_count, ord.created_at
                             FROM tokki_shop.orders as ord 
                             INNER JOIN tokki_shop.clients as c 
                             ON ord.client_id=c.client_id 
                             INNER JOIN tokki_shop.order_items as o_i 
                             ON o_i.order_id=ord.order_id 
-                            GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num
+                            GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num, ord.status
                             ORDER BY ord.order_id DESC;
                             `;
             const resGet = await db.query(getQuery);
@@ -132,7 +132,7 @@ export const ordersController = {
         try{
             const order_id = req.params.order_id;
             const getOrder = `
-                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount,
+                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount, ord.status,
                             o_i.product_name, 
                             o_i.product_qty, o_i.product_price,
                             (o_i.product_qty * o_i.product_price) AS product_total,
@@ -152,6 +152,7 @@ export const ordersController = {
 
             const data = {
                 order_id: orderQuery.rows[0].order_id,
+                status: orderQuery.rows[0].status,
                 client: {
                     name: orderQuery.rows[0].name,
                     last_name: orderQuery.rows[0].last_name,
@@ -170,6 +171,57 @@ export const ordersController = {
             return res.status(200).json({success: true, data: data, message: "Order retrieved."})
         }catch(err){
             next(err);
+        }
+    },
+
+    async getClientHistory(req, res, next){
+        const client_id = req.params.client_id;
+        const getHistory = `
+                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount, ord.status,
+                            COUNT(o_i.product_id) AS item_count, ord.created_at
+                            FROM tokki_shop.orders as ord 
+                            INNER JOIN tokki_shop.clients as c 
+                            ON ord.client_id=c.client_id 
+                            INNER JOIN tokki_shop.order_items as o_i 
+                            ON o_i.order_id=ord.order_id WHERE ord.client_id = $1
+                            GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num, ord.status
+                            ORDER BY ord.order_id DESC;
+                            `;
+        try{
+            const historyQuery = await db.query(getHistory, [client_id]);
+
+            if(historyQuery.rows.length === 0){
+                    return res.status(200).json({success: true, message:"No orders have been placed by this client."});
+                }
+        
+            return res.status(200).json({success: true, data: historyQuery.rows});
+        }catch(err){
+            next(err);
+        }
+    },
+
+    async cancelOrder(res, req, next){
+        const dbClient = await db.getClient();
+        try{
+            const orderId = req.params.order_id;
+            const getOrder =    ` 
+                                    SELECT status
+                                    FROM orders 
+                                    WHERE order_id=$1;
+                                `
+            const queryStatus = await dbClient.query(getOrder, [orderId]);
+            if(queryStatus.rows[0].status === "canceled"){
+                
+            }
+        }catch(err){
+            if(dbClient){
+                await dbClient.query('ROLLBACK');
+            }
+            next(err);
+        }finally{
+            if(dbClient){
+                await dbClient.release();
+            }
         }
     }
 }

@@ -62,6 +62,7 @@ Maps Clerk authenticated user IDs to internal administrative accounts.
 * `total_amount` (NUMERIC(9, 2) NOT NULL)
 * `payment_method` (VARCHAR NOT NULL)
 * `processed_by` (VARCHAR(255) FK -> `users.clerk_user_id` ON DELETE SET NULL)
+* `status` (VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK IN `('approved', 'pending', 'canceled')`) -- Order lifecycle state
 * `created_at` (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
 
 ### E. `order_items` Table (Order Line Items)
@@ -128,15 +129,15 @@ Preserves historical item names and prices at time of purchase.
    - Reject if missing (404), `qty <= 0` (400), or `qty_available < product_qty` (400) — early failures `ROLLBACK` the whole order transaction.
    - Deduct `product_qty` from `qty_available`, recalculating `in_stock = (qty_available > 0)`.
    - Accumulate `total_amount += product_price * product_qty` (database is source of truth for prices).
-3. **Insert Order Header:** `INSERT INTO tokki_shop.orders (...)` -> get `order_id` via `RETURNING order_id`. `processed_by` is `NULL` for now (Clerk not yet wired).
+3. **Insert Order Header:** `INSERT INTO tokki_shop.orders (...)` -> get `order_id` via `RETURNING order_id`. `processed_by` is `NULL` for now (Clerk not yet wired); `status` is set to `'pending'` explicitly.
 4. **Insert Order Items:** Loop through items and insert snapshotted `product_name`, `product_qty`, `product_price` into `tokki_shop.order_items`.
 5. **Commit & Return:** `COMMIT` and return `201 Created` with order summary (`order_id`, `total_amount`, `items`) in the standard `{ success, data, message }` envelope.
 
 ### `GET /api/orders` — List All Orders
-Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amount`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`.
+Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amount`, `status`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`.
 
 ### `GET /api/orders/:order_id` — Single Order Details
-Returns the order header + client info, plus each line item (snapshot `product_name`, `product_qty`, `product_price`, and computed `product_total = qty * price`). Controller folds the flat join rows into `{ header, client, items[] }`. 404 if the order doesn't exist.
+Returns the order header + client info (including `status`), plus each line item (snapshot `product_name`, `product_qty`, `product_price`, and computed `product_total = qty * price`). Controller folds the flat join rows into `{ header, client, items[] }`. 404 if the order doesn't exist.
 
 ---
 
@@ -145,5 +146,26 @@ Returns the order header + client info, plus each line item (snapshot `product_n
 ### `GET /api/orders/client/:client_id`
 List order history for a specific client.
 
-### `DELETE /api/orders/:order_id`
-Cancel an order: restore product quantities to `tokki_shop.products`, set `in_stock = true`, and remove the order record inside a transaction.
+### `PATCH /api/orders/:order_id/cancel` — Cancel Order
+Rather than hard-deleting orders, the `orders` table carries a lifecycle `status` (`'approved'`, `'pending'`, `'canceled'`), defaulting to `'pending'` on creation. The record is always kept for history/audit.
+
+**Cancel logic (inside a transaction):**
+1. Read the order; 404 if it doesn't exist.
+2. **Idempotency guard:** only proceed if the current status is `'pending'` or `'approved'`. If already `'canceled'`, return without touching stock (prevents double-restoring quantities).
+3. `SELECT ... FOR UPDATE` the involved product rows (from `order_items`) — stock may have moved since checkout.
+4. Restore `product_qty` to each `qty_available`, resetting `in_stock = (qty_available > 0)`.
+5. Set the order `status = 'canceled'`.
+6. `COMMIT`.
+
+### `PATCH /api/orders/:order_id/approve` — Approve Order
+Transitions an order from `'pending'` to `'approved'` once the shop owner confirms/handles it. No stock changes — quantities were already deducted at checkout.
+
+**Approve logic (inside a transaction):**
+1. Read the order; 404 if it doesn't exist.
+2. **Transition guard:** only `'pending'` -> `'approved'` is allowed. If already `'approved'`, return as no-op (idempotent). If `'canceled'`, reject — a canceled order cannot be approved.
+3. Set the order `status = 'approved'`.
+4. `COMMIT`.
+
+**Invariants across both endpoints:**
+- New orders are always created with `status = 'pending'` (set explicitly in `createOrder`).
+- Targets are only `'approved'` or `'canceled'` — "un-canceling" and "un-approving" are rejected.

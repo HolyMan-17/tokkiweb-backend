@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS tokki_shop.orders
     total_amount numeric(9, 2) NOT NULL,
     payment_method character varying NOT NULL,
     processed_by character varying(255),
+    status character varying(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('approved', 'pending', 'canceled')),
     created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (order_id),
     FOREIGN KEY (client_id) REFERENCES tokki_shop.clients(client_id) ON DELETE RESTRICT,

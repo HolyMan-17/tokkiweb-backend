@@ -264,6 +264,7 @@ Processes a full checkout: finds/creates the client, validates & deducts product
   "message": "Order has been successfully created."
 }
 ```
+**Note:** every new order is created with `status: 'pending'` by the database default.
 
 #### Response `400 Bad Request`
 Any of: missing `client_info`/`delivery_type`/`payment_method`/`items`; missing client name/last_name/tlf_num; invalid phone number; empty `items` or `items` not an array; `product_qty <= 0`; insufficient stock.
@@ -305,6 +306,7 @@ Returns all orders with the buyer's info and a per-order distinct line-item coun
       "last_name": "Doe",
       "tlf_num": "+584146996703",
       "total_amount": "99.98",
+      "status": "pending",
       "item_count": 2,
       "created_at": "2026-08-04T12:00:00.000Z"
     }
@@ -337,6 +339,7 @@ Returns the order header, client info, and the full list of line items (name, qu
   "success": true,
   "data": {
     "order_id": 3,
+    "status": "pending",
     "client": {
       "name": "Jane",
       "last_name": "Doe",
@@ -366,3 +369,57 @@ Returns the order header, client info, and the full list of line items (name, qu
 ```
 
 **Note:** item names/prices come from the `order_items` snapshot (as paid at purchase time), not the live `products` table.
+
+---
+
+### 2.4 Update Order Status (Cancel / Approve)
+
+Updates the lifecycle `status` of an order. Orders are never hard-deleted — the record stays for history/audit. New orders start as `'pending'`.
+
+* **Method:** `PATCH`
+* **Path:** `/api/orders/:order_id`
+* **URL Params:** `order_id` (integer, required)
+* **Headers:** `Content-Type: application/json`
+
+#### Request Body
+```json
+{
+  "status": "canceled"
+}
+```
+
+**Allowed targets:** `'approved'` or `'canceled'`. "Un-canceling" is rejected.
+
+**Cancel behavior (`status: "canceled"`):**
+1. Only proceeds if current status is `'pending'` or `'approved'` (idempotency guard — prevents double-restoring stock).
+2. Restores each line item's `product_qty` back to `products.qty_available` (with `SELECT ... FOR UPDATE` row locks, recalculating `in_stock`) inside a transaction.
+
+**Approve behavior (`status: "approved"`):** transitions `'pending'` -> `'approved'`, no stock changes.
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "data": {
+    "order_id": 3,
+    "status": "canceled"
+  },
+  "message": "Order status updated."
+}
+```
+
+#### Response `400 Bad Request`
+```json
+{
+  "success": false,
+  "message": "Invalid status transition."
+}
+```
+
+#### Response `404 Not Found`
+```json
+{
+  "success": false,
+  "message": "Order doesn't exist."
+}
+```
