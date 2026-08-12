@@ -44,7 +44,7 @@ export const ordersController = {
                 const prod_info = await dbClient.query(`
                     SELECT product_name, product_price, qty_available 
                     FROM tokki_shop.products 
-                    WHERE product_id=$1 FOR UPDATE
+                    WHERE product_id=$1 FOR UPDATE;
                     `, [i.product_id])
                 if(prod_info.rows.length === 0){
                     await dbClient.query('ROLLBACK');
@@ -200,19 +200,52 @@ export const ordersController = {
         }
     },
 
-    async cancelOrder(res, req, next){
+    async cancelOrder(req, res, next){
         const dbClient = await db.getClient();
         try{
             const orderId = req.params.order_id;
+            await dbClient.query('BEGIN');
             const getOrder =    ` 
                                     SELECT status
-                                    FROM orders 
-                                    WHERE order_id=$1;
-                                `
+                                    FROM tokki_shop.orders 
+                                    WHERE order_id=$1
+                                    FOR UPDATE;
+                                `;
             const queryStatus = await dbClient.query(getOrder, [orderId]);
-            if(queryStatus.rows[0].status === "canceled"){
-                
+            if(queryStatus.rows.length === 0){
+                await dbClient.query('ROLLBACK');
+                return res.status(404).json({success: false, message: "Order doesn't exist."});
             }
+            if(queryStatus.rows[0].status === "canceled"){
+                await dbClient.query('ROLLBACK');
+                return res.status(400).json({success: false, message: "Order is already canceled."});
+            }
+
+            const getItems =    `
+                                    SELECT product_id, product_qty 
+                                    FROM tokki_shop.order_items 
+                                    WHERE order_id=$1
+                                `;
+            const queryItems = await dbClient.query(getItems, [orderId]);
+            for (const item of queryItems.rows){
+                const addBack = item.product_qty;
+                const prod_id = item.product_id;
+                const restock = `
+                                    UPDATE tokki_shop.products 
+                                    SET qty_available = qty_available + $1, in_stock = (qty_available + $1 > 0)
+                                    WHERE product_id = $2;
+                                `;
+                await dbClient.query(restock, [addBack, prod_id]);
+            }
+
+            const updateStatus = `
+                                    UPDATE tokki_shop.orders SET status='canceled' WHERE order_id=$1 RETURNING
+                                    order_id, status;
+                                `;
+            await dbClient.query(updateStatus,[orderId]);
+
+            await dbClient.query('COMMIT');
+            return res.status(200).json({success: true, message: "Order was canceled.", })
         }catch(err){
             if(dbClient){
                 await dbClient.query('ROLLBACK');
@@ -223,5 +256,40 @@ export const ordersController = {
                 await dbClient.release();
             }
         }
+    },
+
+    async approveOrder(req, res, next){
+        const dbClient = await db.getClient();
+        const orderId = req.params.order_id;
+        try{
+            await dbClient.query('BEGIN');
+            const verifyOrder = `SELECT order_id, status FROM tokki_shop.orders WHERE order_id=$1; FOR UPDATE`;
+            const retrieveRow = await dbClient.query(verifyOrder, [orderId]);
+            if(retrieveRow.rows.length === 0){
+                await dbClient.query('ROLLBACK');
+                return res.status(404).json({success: false, message: "Requested order doesn't exist."});
+            }
+            else if((retrieveRow.rows[0].status === 'canceled') || (retrieveRow.rows[0].status === 'approved')){
+                await dbClient.query('ROLLBACK');
+                return res.status(400).json({success: false, message: "Order has already been processed."});
+            }
+
+            const updateStatus =    `
+                                        UPDATE tokki_shop.orders SET status='approved' WHERE order_id=$1
+                                        RETURNING order_id, status;
+                                    `;
+            const updateQuery = await dbClient.query(updateStatus, [orderId]);
+            await dbClient.query('COMMIT');
+            return res.status(200).json({success: true, message: "Order was successfully approved", data: updateQuery.rows[0]})
+        }catch(err){
+            await dbClient.query('ROLLBACK');
+            next(err);
+        }finally{
+            if(dbClient){
+                await dbClient.release();
+            }
+        }
     }
+
+
 }
