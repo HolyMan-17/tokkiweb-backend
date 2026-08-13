@@ -8,4 +8,5 @@ router.get('/', ordersController.getAllOrders);
 router.get('/client/:client_id', ordersController.getClientHistory);
 router.get('/:order_id', ordersController.getSingleOrder);
 router.patch('/:order_id/cancel', ordersController.cancelOrder);
+router.patch('/:order_id/approve', ordersController.approveOrder);
 export default router

@@ -263,7 +263,7 @@ export const ordersController = {
         const orderId = req.params.order_id;
         try{
             await dbClient.query('BEGIN');
-            const verifyOrder = `SELECT order_id, status FROM tokki_shop.orders WHERE order_id=$1; FOR UPDATE`;
+            const verifyOrder = `SELECT order_id, status FROM tokki_shop.orders WHERE order_id=$1 FOR UPDATE;`;
             const retrieveRow = await dbClient.query(verifyOrder, [orderId]);
             if(retrieveRow.rows.length === 0){
                 await dbClient.query('ROLLBACK');
