@@ -216,9 +216,9 @@ export const ordersController = {
                 await dbClient.query('ROLLBACK');
                 return res.status(404).json({success: false, message: "Order doesn't exist."});
             }
-            if(queryStatus.rows[0].status === "canceled"){
+            if(queryStatus.rows[0].status !== "pending"){
                 await dbClient.query('ROLLBACK');
-                return res.status(400).json({success: false, message: "Order is already canceled."});
+                return res.status(400).json({success: false, message: "Order can only be canceled while pending."});
             }
 
             const getItems =    `
@@ -269,7 +269,7 @@ export const ordersController = {
                 await dbClient.query('ROLLBACK');
                 return res.status(404).json({success: false, message: "Requested order doesn't exist."});
             }
-            else if((retrieveRow.rows[0].status === 'canceled') || (retrieveRow.rows[0].status === 'approved')){
+            else if(retrieveRow.rows[0].status !== 'pending'){
                 await dbClient.query('ROLLBACK');
                 return res.status(400).json({success: false, message: "Order has already been processed."});
             }
