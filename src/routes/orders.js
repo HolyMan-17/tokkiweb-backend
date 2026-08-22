@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { ordersController } from '../controllers/c_orders.js'
+import { requireAdmin } from '../middleware/auth.js'
 
 const router = Router();
 
 router.post('/', ordersController.createOrder);
-router.get('/', ordersController.getAllOrders);
-router.get('/client/:client_id', ordersController.getClientHistory);
-router.get('/:order_id', ordersController.getSingleOrder);
-router.patch('/:order_id/cancel', ordersController.cancelOrder);
-router.patch('/:order_id/approve', ordersController.approveOrder);
+router.get('/', requireAdmin, ordersController.getAllOrders);
+router.get('/client/:client_id', requireAdmin, ordersController.getClientHistory);
+router.get('/:order_id', requireAdmin, ordersController.getSingleOrder);
+router.patch('/:order_id/cancel', requireAdmin, ordersController.cancelOrder);
+router.patch('/:order_id/approve', requireAdmin, ordersController.approveOrder);
 export default router

@@ -11,7 +11,7 @@ export const productsController = {
                 `
             );
             if (prodsquery.rows.length === 0){
-                return res.status(200).json({success:"true", message:"There's no registered products."});
+                return res.status(200).json({success:true, message:"There's no registered products."});
             }
             return res.status(200).json({ success: true, data: prodsquery.rows });
         }catch(err){
@@ -30,7 +30,7 @@ export const productsController = {
                 `
             const resquery = await db.query(querytext, [productId]);
             if (resquery.rows.length === 0){
-                return res.status(404).json({success: "false", message: "Product was not found."});
+                return res.status(404).json({success: false, message: "Product was not found."});
             }
             return res.status(200).json({ success: true, data: resquery.rows[0] });
         }catch(err){
@@ -81,7 +81,7 @@ export const productsController = {
             const queryArchive = await db.query('SELECT is_archived FROM tokki_shop.products WHERE product_id = $1', [productId]);
 
             if (queryArchive.rows.length === 0){
-                return res.status(404).json({success: "false", message: "Product was not found."});
+                return res.status(404).json({success: false, message: "Product was not found."});
             }
 
             const is_archived = queryArchive.rows[0].is_archived;

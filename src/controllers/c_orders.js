@@ -1,5 +1,6 @@
 import * as db from '../config/db.js';
 import { normalizeAndValidatePhone } from '../utils/validate.js';
+import { upsertAdminUser } from '../middleware/auth.js';
 
 export const ordersController = {
     async createOrder(req, res, next) {
@@ -239,10 +240,11 @@ export const ordersController = {
             }
 
             const updateStatus = `
-                                    UPDATE tokki_shop.orders SET status='canceled' WHERE order_id=$1 RETURNING
-                                    order_id, status;
+                                    UPDATE tokki_shop.orders SET status='canceled', processed_by=$2 WHERE order_id=$1 RETURNING
+                                    order_id, status, processed_by;
                                 `;
-            await dbClient.query(updateStatus,[orderId]);
+            await upsertAdminUser(dbClient, req.adminUser);
+            await dbClient.query(updateStatus,[orderId, req.adminUser.clerk_user_id]);
 
             await dbClient.query('COMMIT');
             return res.status(200).json({success: true, message: "Order was canceled.", })
@@ -275,10 +277,11 @@ export const ordersController = {
             }
 
             const updateStatus =    `
-                                        UPDATE tokki_shop.orders SET status='approved' WHERE order_id=$1
-                                        RETURNING order_id, status;
+                                        UPDATE tokki_shop.orders SET status='approved', processed_by=$2 WHERE order_id=$1
+                                        RETURNING order_id, status, processed_by;
                                     `;
-            const updateQuery = await dbClient.query(updateStatus, [orderId]);
+            await upsertAdminUser(dbClient, req.adminUser);
+            const updateQuery = await dbClient.query(updateStatus, [orderId, req.adminUser.clerk_user_id]);
             await dbClient.query('COMMIT');
             return res.status(200).json({success: true, message: "Order was successfully approved", data: updateQuery.rows[0]})
         }catch(err){

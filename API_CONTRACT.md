@@ -1,8 +1,13 @@
 # Tokki Shop Backend API Contract
 
-**Version:** 1.0.0  
+**Version:** 1.2.0  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
+**Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders`. Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
+
+```json
+{ "success": false, "message": "Authentication required." }
+```
 
 ---
 
@@ -372,39 +377,26 @@ Returns the order header, client info, and the full list of line items (name, qu
 
 ---
 
-### 2.4 Update Order Status (Cancel / Approve)
+### 2.4 Cancel Order
 
-Updates the lifecycle `status` of an order. Orders are never hard-deleted — the record stays for history/audit. New orders start as `'pending'`.
+Cancels an order and restores its reserved stock. Orders are never hard-deleted — the record stays for history/audit with `status = 'canceled'`.
 
 * **Method:** `PATCH`
-* **Path:** `/api/orders/:order_id`
+* **Path:** `/api/orders/:order_id/cancel`
 * **URL Params:** `order_id` (integer, required)
-* **Headers:** `Content-Type: application/json`
+* **Request Body:** None
 
-#### Request Body
-```json
-{
-  "status": "canceled"
-}
-```
-
-**Allowed targets:** `'approved'` or `'canceled'`. "Un-canceling" is rejected.
-
-**Cancel behavior (`status: "canceled"`):**
-1. Only proceeds if current status is `'pending'` or `'approved'` (idempotency guard — prevents double-restoring stock).
-2. Restores each line item's `product_qty` back to `products.qty_available` (with `SELECT ... FOR UPDATE` row locks, recalculating `in_stock`) inside a transaction.
-
-**Approve behavior (`status: "approved"`):** transitions `'pending'` -> `'approved'`, no stock changes.
+**Behavior (inside a transaction):**
+1. Locks the order row (`SELECT ... FOR UPDATE`); 404 if it doesn't exist.
+2. Only proceeds if the current status is `'pending'`. An already-processed order (`'approved'` or `'canceled'`) is rejected with `400` — this prevents double-restoring stock.
+3. Restores each line item's `product_qty` back to `products.qty_available`, recalculating `in_stock`.
+4. Sets `status = 'canceled'`.
 
 #### Response `200 OK`
 ```json
 {
   "success": true,
-  "data": {
-    "order_id": 3,
-    "status": "canceled"
-  },
-  "message": "Order status updated."
+  "message": "Order was canceled."
 }
 ```
 
@@ -412,7 +404,7 @@ Updates the lifecycle `status` of an order. Orders are never hard-deleted — th
 ```json
 {
   "success": false,
-  "message": "Invalid status transition."
+  "message": "Order can only be canceled while pending."
 }
 ```
 
@@ -423,3 +415,94 @@ Updates the lifecycle `status` of an order. Orders are never hard-deleted — th
   "message": "Order doesn't exist."
 }
 ```
+
+---
+
+### 2.5 Approve Order
+
+Transitions an order from `'pending'` to `'approved'` once the shop owner confirms it. No stock changes — quantities were deducted at checkout.
+
+* **Method:** `PATCH`
+* **Path:** `/api/orders/:order_id/approve`
+* **URL Params:** `order_id` (integer, required)
+* **Request Body:** None
+
+**Behavior (inside a transaction):**
+1. Locks the order row; 404 if it doesn't exist.
+2. Only proceeds if the current status is `'pending'`. Already-approved orders are rejected with `400` ("already processed"); canceled orders cannot be approved.
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "message": "Order was successfully approved",
+  "data": {
+    "order_id": 3,
+    "status": "approved"
+  }
+}
+```
+
+#### Response `400 Bad Request`
+```json
+{
+  "success": false,
+  "message": "Order has already been processed."
+}
+```
+
+#### Response `404 Not Found`
+```json
+{
+  "success": false,
+  "message": "Requested order doesn't exist."
+}
+```
+
+---
+
+### 2.6 List Client Order History
+
+Returns every order placed by a specific client (same shape as the dashboard list), newest-first.
+
+* **Method:** `GET`
+* **Path:** `/api/orders/client/:client_id`
+* **URL Params:** `client_id` (integer, required)
+* **Request Body:** None
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "order_id": 5,
+      "name": "Jane",
+      "last_name": "Doe",
+      "tlf_num": "+584146996703",
+      "total_amount": "99.98",
+      "status": "pending",
+      "item_count": 2,
+      "created_at": "2026-08-04T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+> **Note:** a `client_id` that exists but has no orders returns the same empty-state shape as §2.2 (`"No orders have been placed by this client."`). A nonexistent `client_id` currently also returns `200` with that message rather than `404` — see ROADMAP.md.
+
+---
+
+## 🧭 3. Status Lifecycle Summary
+
+```
+            create                /cancel              /approve
+  (none) ───────────► pending ────────► canceled
+                          │
+                          └────────────────► approved
+```
+
+* New orders are always created as `'pending'`.
+* Transitions out of `'pending'`: → `'approved'` (§2.5) or → `'canceled'` (§2.4).
+* Terminal states: `'approved'` and `'canceled'` — no transitions back to `'pending'`.
+* Canceling restores stock; approving does not touch stock.

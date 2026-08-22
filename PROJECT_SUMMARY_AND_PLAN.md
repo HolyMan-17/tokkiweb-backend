@@ -17,16 +17,20 @@ This document summarizes all architectural decisions, database schemas, complete
 
 ---
 
-## 🔐 2. Authentication Strategy (Clerk)
+## 🔐 2. Authentication Strategy (Clerk — wired)
 
-* **Provider:** [Clerk](https://clerk.com) (`@clerk/express`)
+* **Provider:** [Clerk](https://clerk.com) (`@clerk/express` v2)
 * **Decision:** Replaced custom user authentication & password hashing with Clerk.
 * **Benefits:**
   - Zero password or crypto management on the server.
   - Built-in multi-factor auth, session rotation, and security rate-limiting.
   - Pre-built React components (`<SignIn />`, `<UserButton />`) for frontend UI.
-  - Express route protection via Clerk's `requireAuth()` middleware.
-* **Database Role:** The `tokki_shop.users` table is simplified to map `clerk_user_id` to internal roles (`tech_admin`, `shop_owner`).
+* **How it's wired (v2 pattern — no `requireAuth()`):**
+  - `clerkMiddleware()` runs globally in `src/app.js`; CORS is restricted to `FRONTEND_ORIGINS` (default `http://localhost:5173`).
+  - Protected routes chain the custom `requireAdmin` middleware (`src/middleware/auth.js`): missing session → JSON `401`; then it loads the Clerk user via Backend API and requires `publicMetadata.role ∈ {'owner','tech'}` → else `403`; on success stashes `req.adminUser`.
+  - Role mapping to DB: `owner`→`shop_owner`, `tech`→`tech_admin`. Cancel/approve lazily upsert the acting admin into `tokki_shop.users` and write their id into `orders.processed_by`.
+* **Public endpoints:** product GETs + `POST /api/orders` (guest checkout). Everything else needs an admin token.
+* **Database Role:** The `tokki_shop.users` table maps `clerk_user_id` to internal roles.
 
 ---
 
@@ -136,36 +140,44 @@ Preserves historical item names and prices at time of purchase.
 ### `GET /api/orders` — List All Orders
 Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amount`, `status`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`.
 
+### `GET /api/orders` — List All Orders
+Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amount`, `status`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`.
+
 ### `GET /api/orders/:order_id` — Single Order Details
 Returns the order header + client info (including `status`), plus each line item (snapshot `product_name`, `product_qty`, `product_price`, and computed `product_total = qty * price`). Controller folds the flat join rows into `{ header, client, items[] }`. 404 if the order doesn't exist.
 
----
-
-## 🚧 6. Next Feature Plan: Remaining Orders Endpoints
-
-### `GET /api/orders/client/:client_id`
-List order history for a specific client.
+### `GET /api/orders/client/:client_id` — Client Order History
+Same shape as the dashboard list, filtered by `client_id`, newest-first. Empty result returns `"No orders have been placed by this client."` (also returned for unknown `client_id`s — see ROADMAP.md).
 
 ### `PATCH /api/orders/:order_id/cancel` — Cancel Order
-Rather than hard-deleting orders, the `orders` table carries a lifecycle `status` (`'approved'`, `'pending'`, `'canceled'`), defaulting to `'pending'` on creation. The record is always kept for history/audit.
+The `orders` table carries a lifecycle `status`; records are never hard-deleted.
 
 **Cancel logic (inside a transaction):**
-1. Read the order; 404 if it doesn't exist.
-2. **Idempotency guard:** only proceed if the current status is `'pending'` or `'approved'`. If already `'canceled'`, return without touching stock (prevents double-restoring quantities).
-3. `SELECT ... FOR UPDATE` the involved product rows (from `order_items`) — stock may have moved since checkout.
-4. Restore `product_qty` to each `qty_available`, resetting `in_stock = (qty_available > 0)`.
-5. Set the order `status = 'canceled'`.
-6. `COMMIT`.
+1. `SELECT ... FOR UPDATE` the order row; 404 if missing.
+2. **Guard:** only `'pending'` orders can be canceled. `'approved'`/`'canceled'` are rejected with 400 — prevents double-restoring stock.
+3. Restore each line item's `product_qty` to `qty_available` (recalculating `in_stock`).
+4. Set `status = 'canceled'`, `COMMIT`. Response is `{ success, message }` with no `data` payload.
+
+> **Deviation from original plan:** the plan allowed canceling from `'approved'` too; implementation restricts cancel to `'pending'` only.
 
 ### `PATCH /api/orders/:order_id/approve` — Approve Order
-Transitions an order from `'pending'` to `'approved'` once the shop owner confirms/handles it. No stock changes — quantities were already deducted at checkout.
+Transitions `'pending'` -> `'approved'` when the shop owner confirms an order. No stock changes — quantities were deducted at checkout.
 
 **Approve logic (inside a transaction):**
-1. Read the order; 404 if it doesn't exist.
-2. **Transition guard:** only `'pending'` -> `'approved'` is allowed. If already `'approved'`, return as no-op (idempotent). If `'canceled'`, reject — a canceled order cannot be approved.
-3. Set the order `status = 'approved'`.
-4. `COMMIT`.
+1. `SELECT ... FOR UPDATE` the order row; 404 if missing ("Requested order doesn't exist.").
+2. **Guard:** only `'pending'` can be approved. Anything else → 400 "Order has already been processed."
+3. Set `status = 'approved'`, `COMMIT`. Returns the updated row as `data`.
 
 **Invariants across both endpoints:**
 - New orders are always created with `status = 'pending'` (set explicitly in `createOrder`).
-- Targets are only `'approved'` or `'canceled'` — "un-canceling" and "un-approving" are rejected.
+- Both terminal states (`'approved'`, `'canceled'`) reject further transitions — no un-canceling or un-approving.
+
+---
+
+## 🚧 6. What's Next
+
+All originally planned endpoints are now implemented. The forward-looking backlog lives in [`ROADMAP.md`](ROADMAP.md); agent-oriented project context lives in [`CONTEXT.md`](CONTEXT.md). Highlights of known gaps:
+
+* **Auth wired:** `clerkMiddleware()` + `requireAdmin` protect product mutations and all order endpoints except checkout (see §2). Remaining: webhook-based user sync, token-attachment on frontend admin calls.
+* **Test coverage:** unit tests exist only for phone validation (`tests/validate.test.js`); controller/integration tests (supertest) are pending.
+* **Minor response bugs:** a couple of `success: "true"` / `success: "false"` string literals in `c_products.js` (see ROADMAP.md P1).
