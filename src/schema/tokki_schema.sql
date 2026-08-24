@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS tokki_shop.products
     product_name character varying NOT NULL,
     product_price numeric(9, 2) NOT NULL,
     product_description text NOT NULL,
+    category character varying(100) NOT NULL DEFAULT 'Otros',
     qty_available integer NOT NULL DEFAULT 0,
     in_stock boolean NOT NULL DEFAULT FALSE,
     is_archived boolean NOT NULL DEFAULT FALSE,
@@ -63,3 +64,6 @@ CREATE TABLE IF NOT EXISTS tokki_shop.order_items (
 );
 
 COMMIT;
+
+-- 7. Migrations for pre-existing databases (idempotent)
+ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS category character varying(100) NOT NULL DEFAULT 'Otros';

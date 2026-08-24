@@ -35,6 +35,7 @@ Every JSON response: `{ success: boolean, data?, message?, row?/updated_row? }`.
 ### Database access (`src/config/db.js`)
 - Single statements / reads: `db.query(text, params)` (pool).
 - Multi-statement transactions: `const client = await db.getClient()` then explicit `BEGIN` / `COMMIT` / `ROLLBACK`, and **always** `client.release()` in a `finally` block. `getClient()` monkey-patches query tracking with a 5s leak alarm — keep using it rather than importing `pg` directly.
+- **Never interpolate into SQL text** — not even constants or "trusted" values. Query strings must be fully literal; if behavior branches, write separate complete queries per branch (see `getAllProducts`'s `?category=` handling). All user-supplied values go through `$n` params. Rationale: any `${}` inside a query normalizes interpolation as a pattern and invites injection bugs on the next edit.
 
 ### Stock integrity rules
 - Any read-modify-write on `products.qty_available` inside checkout/cancel uses `SELECT ... FOR UPDATE` to prevent overselling. Never remove these locks.
@@ -46,6 +47,9 @@ Every JSON response: `{ success: boolean, data?, message?, row?/updated_row? }`.
 
 ### Soft delete for products
 Archive sets `is_archived = true, qty_available = 0, in_stock = false`. All public product queries filter `is_archived = false`.
+
+### Categories
+`products.category` stores the **display name** exactly as the frontend renders it (`'Maquillaje'`, `'Skincare'`, … — the allowed set lives in the frontend's `src/constants/index.ts` `CATEGORIES`). The storefront filters with strict equality (`p.category === category.name`), so never store slugs or re-cased variants. `GET /api/products?category=` is an exact match. DB default `'Otros'` covers pre-category rows.
 
 ### Phones
 Always pass user-supplied phones through `normalizeAndValidatePhone(country_code, tlf_num)` (`src/utils/validate.js`) → returns canonical E.164 or `null`. Accepts local (`0414...`) + country code, or full international. Store only the normalized value; `clients.tlf_num` is UNIQUE.

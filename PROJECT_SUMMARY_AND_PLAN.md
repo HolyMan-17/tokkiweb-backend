@@ -11,7 +11,7 @@ This document summarizes all architectural decisions, database schemas, complete
 * **Architecture Pattern:** **Level 2 Architecture** (Router ➡️ Controller + Direct Queries)
   - `src/config/db.js`: PostgreSQL connection pool adapter with query execution logging and 5-second connection leak diagnostics.
   - `src/routes/`: Route declarations mapping URL endpoints to controllers.
-  - `src/controllers/`: Express handlers reading HTTP requests, performing validation, executing direct SQL queries via database client transactions, and returning standardized JSON.
+  - `src/controllers/`: Express handlers reading HTTP requests, performing validation, executing direct SQL queries via database client transactions, and returning standardized JSON. SQL strings are always fully literal — no `${}` interpolation into queries, ever; dynamic behavior means separate complete queries per branch and all values bind via `$n` params.
   - `src/utils/validate.js`: Shared validation helpers (currently `normalizeAndValidatePhone`) reused across controllers.
   - `src/schema/tokki_schema.sql`: Authoritative PostgreSQL schema file for the `tokki_shop` schema.
 
@@ -55,6 +55,7 @@ Maps Clerk authenticated user IDs to internal administrative accounts.
 * `product_name` (VARCHAR NOT NULL)
 * `product_price` (NUMERIC(9, 2) NOT NULL)
 * `product_description` (TEXT NOT NULL)
+* `category` (VARCHAR(100) NOT NULL DEFAULT `'Otros'`) -- display name; values mirror the frontend `CATEGORIES` constant
 * `qty_available` (INTEGER NOT NULL DEFAULT 0)
 * `in_stock` (BOOLEAN NOT NULL DEFAULT FALSE)
 * `is_archived` (BOOLEAN NOT NULL DEFAULT FALSE) -- Soft-delete flag
@@ -82,11 +83,13 @@ Preserves historical item names and prices at time of purchase.
 
 ## 📦 4. Completed & Verified Features: Products API (`/api/products`)
 
-* **`GET /api/products`**: Returns all non-archived products.
+* **`GET /api/products`**: Returns all non-archived products. Optional `?category=` filter (exact display-name match).
 * **`GET /api/products/:product_id`**: Returns single product details (404 if archived or missing).
-* **`POST /api/products`**: Inserts a new product inside a transaction. Auto-calculates `in_stock = (qty_available > 0)`.
+* **`POST /api/products`**: Inserts a new product inside a transaction; requires `category` (non-empty string ≤100 chars). Auto-calculates `in_stock = (qty_available > 0)`.
 * **`PATCH /api/products/:product_id`**: Partial update using Merge Pattern (`!== undefined`). Auto-recalculates `in_stock` when quantity changes.
 * **`DELETE /api/products/:product_id`**: Soft-deletes product by setting `is_archived = true`, `qty_available = 0`, `in_stock = false`.
+
+**Category convention:** stored as the exact display name the frontend renders and matches on (`p.category === CATEGORIES[i].name`); the allowed set lives in the frontend's `src/constants/index.ts`. Pre-category rows default to `'Otros'` via an idempotent `ALTER TABLE` at the bottom of `tokki_schema.sql`.
 
 ---
 

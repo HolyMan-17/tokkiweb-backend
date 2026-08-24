@@ -1,6 +1,6 @@
 # Tokki Shop Backend API Contract
 
-**Version:** 1.2.0  
+**Version:** 1.3.0  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
 **Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders`. Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
@@ -48,6 +48,7 @@ Retrieves all non-archived products available in the store catalog.
 
 * **Method:** `GET`
 * **Path:** `/api/products`
+* **Query Params (optional):** `category` — exact, case-sensitive match against the product's `category` display name (e.g. `?category=Maquillaje`). Values mirror the frontend's `CATEGORIES` constant.
 * **Headers:** `Accept: application/json`
 * **Request Body:** None
 
@@ -61,6 +62,7 @@ Retrieves all non-archived products available in the store catalog.
       "product_name": "Tokki Hoodie",
       "product_price": "49.99",
       "product_description": "Comfortable oversized cotton hoodie",
+      "category": "Ropa",
       "qty_available": 25,
       "in_stock": true
     }
@@ -88,6 +90,7 @@ Retrieves details for a specific active product by its ID.
     "product_name": "Tokki Hoodie",
     "product_price": "49.99",
     "product_description": "Comfortable oversized cotton hoodie",
+    "category": "Ropa",
     "qty_available": 25,
     "in_stock": true
   }
@@ -108,8 +111,8 @@ Retrieves details for a specific active product by its ID.
 Adds a new product to the catalog. Automatically calculates `in_stock = true` if `qty_available > 0`.
 
 * **Method:** `POST`
-* **Path:** `/api/products`
-* **Headers:** `Content-Type: application/json`
+* **Path:** `/api/products` *(admin — see [Auth](#-general-response-format))*
+* **Headers:** `Content-Type: application/json`, `Authorization: Bearer <token>`
 
 #### Request Body
 ```json
@@ -117,9 +120,12 @@ Adds a new product to the catalog. Automatically calculates `in_stock = true` if
   "product_name": "Tokki T-Shirt",
   "product_price": 24.99,
   "product_description": "100% organic cotton graphic tee",
+  "category": "Ropa",
   "qty_available": 50
 }
 ```
+
+**Category rules:** required, non-empty string, max 100 chars. Stored as the display name exactly as sent (frontend matches `p.category === CATEGORIES[i].name`), so send values from the frontend's `CATEGORIES` list. Defaults to `'Otros'` at the DB level only for rows created outside this endpoint.
 
 #### Response `201 Created`
 ```json
@@ -130,6 +136,7 @@ Adds a new product to the catalog. Automatically calculates `in_stock = true` if
     "product_name": "Tokki T-Shirt",
     "product_price": "24.99",
     "product_description": "100% organic cotton graphic tee",
+    "category": "Ropa",
     "qty_available": 50,
     "in_stock": true,
     "is_archived": false
@@ -144,6 +151,13 @@ Adds a new product to the catalog. Automatically calculates `in_stock = true` if
   "message": "All product fields are required!"
 }
 ```
+or, when `category` is missing/empty/too long:
+```json
+{
+  "success": false,
+  "message": "A valid product category is required."
+}
+```
 
 ---
 
@@ -151,14 +165,15 @@ Adds a new product to the catalog. Automatically calculates `in_stock = true` if
 Updates specific details of an existing product. If `qty_available` is modified, `in_stock` is recalculated automatically.
 
 * **Method:** `PATCH`
-* **Path:** `/api/products/:product_id`
+* **Path:** `/api/products/:product_id` *(admin)*
 * **URL Params:** `product_id` (integer, required)
-* **Headers:** `Content-Type: application/json`
+* **Headers:** `Content-Type: application/json`, `Authorization: Bearer <token>`
 
 #### Request Body (All fields optional, at least one required)
 ```json
 {
   "product_price": 19.99,
+  "category": "Ropa",
   "qty_available": 10
 }
 ```
@@ -172,6 +187,7 @@ Updates specific details of an existing product. If `qty_available` is modified,
     "product_name": "Tokki T-Shirt",
     "product_price": "19.99",
     "product_description": "100% organic cotton graphic tee",
+    "category": "Ropa",
     "qty_available": 10,
     "in_stock": true
   }
