@@ -2,6 +2,8 @@
 
 Read this before changing code. It captures the non-obvious decisions and patterns that aren't visible from any single file.
 
+**Repo boundaries:** You may only check or add context from another repo (e.g. `tokkiweb-frontend`) if the user asks you to; otherwise focus exclusively on the present directory.
+
 **Related docs:** [`README.md`](README.md) (setup) · [`API_CONTRACT.md`](API_CONTRACT.md) (endpoint contracts) · [`PROJECT_SUMMARY_AND_PLAN.md`](PROJECT_SUMMARY_AND_PLAN.md) (architecture & schema) · [`ROADMAP.md`](ROADMAP.md) (backlog)
 
 ---
@@ -60,6 +62,9 @@ Always pass user-supplied phones through `normalizeAndValidatePhone(country_code
 - Role → DB mapping: `owner`→`shop_owner`, `tech`→`tech_admin`. Admin users are lazily upserted into `tokki_shop.users` when they cancel/approve orders, and that id lands in `orders.processed_by`.
 - **Do NOT use `requireAuth()`** from `@clerk/express` v2 — it's deprecated and redirects browsers instead of returning JSON 401.
 - Public endpoints: product GETs + `POST /api/orders` (guest checkout). Everything else requires an admin session token.
+
+### Delivery types
+`orders.delivery_type` is enforced at both layers: the controller rejects anything outside `['envio_nacional', 'delivery', 'retiro_tienda']` with 400, and a DB CHECK constraint (`orders_delivery_type_check`, added `NOT VALID` so legacy rows survive) backstops it. The API stores/returns **slugs only**; accented display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") are a frontend concern (`DELIVERY_TYPES` in `src/constants/index.ts`). Keep the two lists in sync manually — same discipline as categories.
 
 ### Code style
 ES Modules everywhere (`import`/`export`). Controllers hold SQL inline as template literals with `$1` params — no ORM, no query builder by design (Level 2 architecture). No comments-heavy style; match existing naming (`c_orders.js`, `c_products.js`). No linter is configured yet.

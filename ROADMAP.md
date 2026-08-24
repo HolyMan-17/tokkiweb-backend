@@ -39,8 +39,8 @@ Currently trusts body types; malformed JSON types can reach SQL or produce NaN t
 - `GET /api/orders/client/:client_id` returns 200 + "No orders have been placed by this client." for nonexistent clients. Check client existence first and return 404.
 - Non-integer `:order_id` / `:product_id` params fall through to Postgres errors → 500. Coerce/reject early with 400/404.
 
-### [ ] 7. Constrain enums at the DB level
-`delivery_type` and `payment_method` are free-form strings. Add CHECK constraints (or lookup tables), e.g. delivery ∈ (`standard`, `express`, `pickup`) once business confirms values.
+### [ ] 7. Constrain remaining enums at the DB level
+~~`delivery_type`~~ done (controller allowlist + `orders_delivery_type_check`). `payment_method` is still free-form — add a CHECK constraint (or lookup table) once business confirms values (`pago_movil`, `bank_transfer`, `cash`, `zelle` per the frontend's `PAYMENT_METHODS`).
 
 ### [ ] 8. Transaction hygiene in `createOrder`
 The find-or-create-client step commits its own mini-transaction before the main one starts (two transactions per request). Fold it into the single main transaction for atomicity. Also deduplicate the double `BEGIN` risk if code paths evolve.

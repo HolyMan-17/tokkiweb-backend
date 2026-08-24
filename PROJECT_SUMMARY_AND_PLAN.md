@@ -63,7 +63,7 @@ Maps Clerk authenticated user IDs to internal administrative accounts.
 ### D. `orders` Table (Store Purchase Headers)
 * `order_id` (SERIAL PRIMARY KEY)
 * `client_id` (INTEGER NOT NULL FK -> `clients.client_id`)
-* `delivery_type` (VARCHAR NOT NULL)
+* `delivery_type` (VARCHAR NOT NULL, CHECK IN `('envio_nacional', 'delivery', 'retiro_tienda')`) -- enforced slugs; labels live in the frontend
 * `total_amount` (NUMERIC(9, 2) NOT NULL)
 * `payment_method` (VARCHAR NOT NULL)
 * `processed_by` (VARCHAR(255) FK -> `users.clerk_user_id` ON DELETE SET NULL)
@@ -105,7 +105,7 @@ Preserves historical item names and prices at time of purchase.
     "country_code": "+58",
     "tlf_num": "041469996703"
   },
-  "delivery_type": "standard",
+  "delivery_type": "envio_nacional",
   "payment_method": "credit_card",
   "items": [
     { "product_id": 1, "product_qty": 2 },
@@ -123,7 +123,7 @@ Preserves historical item names and prices at time of purchase.
 1. Presence of `client_info`, `delivery_type`, `payment_method`, `items`.
 2. Client name/last_name/tlf_num present.
 3. Phone number is valid international format.
-4. `delivery_type` / `payment_method` truthy; `items` is a non-empty array.
+4. `delivery_type` / `payment_method` truthy; `items` is a non-empty array; `delivery_type` ∈ allowed slugs (`envio_nacional`, `delivery`, `retiro_tienda` — also enforced by a DB CHECK constraint).
 5. Per item: product exists (404), `product_qty > 0` (400), stock sufficient (400).
 
 **Transaction Sequence (single `BEGIN` -> `COMMIT` / `ROLLBACK`):**
@@ -138,7 +138,7 @@ Preserves historical item names and prices at time of purchase.
    - Accumulate `total_amount += product_price * product_qty` (database is source of truth for prices).
 3. **Insert Order Header:** `INSERT INTO tokki_shop.orders (...)` -> get `order_id` via `RETURNING order_id`. `processed_by` is `NULL` for now (Clerk not yet wired); `status` is set to `'pending'` explicitly.
 4. **Insert Order Items:** Loop through items and insert snapshotted `product_name`, `product_qty`, `product_price` into `tokki_shop.order_items`.
-5. **Commit & Return:** `COMMIT` and return `201 Created` with order summary (`order_id`, `total_amount`, `items`) in the standard `{ success, data, message }` envelope.
+5. **Commit & Return:** `COMMIT` and return `201 Created` with order summary (`order_id`, `delivery_type`, `payment_method`, `total_amount`, `items`) in the standard `{ success, data, message }` envelope.
 
 ### `GET /api/orders` — List All Orders
 Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amount`, `status`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`.

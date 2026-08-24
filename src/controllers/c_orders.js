@@ -2,6 +2,8 @@ import * as db from '../config/db.js';
 import { normalizeAndValidatePhone } from '../utils/validate.js';
 import { upsertAdminUser } from '../middleware/auth.js';
 
+const ALLOWED_DELIVERY_TYPES = ['envio_nacional', 'delivery', 'retiro_tienda'];
+
 export const ordersController = {
     async createOrder(req, res, next) {
         const dbClient = await db.getClient();
@@ -20,6 +22,9 @@ export const ordersController = {
             }
             if(!delivery_type || !payment_method || !Array.isArray(items) || items.length === 0){
                 return res.status(400).json({success: false, message: "Valid delivery_type, payment_method, and items are required."})
+            }
+            if (!ALLOWED_DELIVERY_TYPES.includes(delivery_type)){
+                return res.status(400).json({success: false, message: "delivery_type must be one of: envio_nacional, delivery, retiro_tienda."})
             }
             const queryClient = 'SELECT client_id FROM tokki_shop.clients WHERE tlf_num=$1';
             const phone = [normalizedPhone];
@@ -86,6 +91,8 @@ export const ordersController = {
                 success: true,
                 data: {
                     order_id: orderQuery.rows[0].order_id,
+                    delivery_type,
+                    payment_method,
                     total_amount,
                     items: ordered_items
                 },

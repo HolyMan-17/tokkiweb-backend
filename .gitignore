@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Uploaded product images (served from UPLOAD_DIR)
+uploads/
+
 # Secrets & Environment
 .env
 

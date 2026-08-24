@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS tokki_shop.orders
 (
     order_id serial NOT NULL,
     client_id integer NOT NULL,
-    delivery_type character varying NOT NULL,
+    delivery_type character varying NOT NULL CONSTRAINT orders_delivery_type_check CHECK (delivery_type IN ('envio_nacional', 'delivery', 'retiro_tienda')),
     total_amount numeric(9, 2) NOT NULL,
     payment_method character varying NOT NULL,
     processed_by character varying(255),
@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS tokki_shop.products
     product_price numeric(9, 2) NOT NULL,
     product_description text NOT NULL,
     category character varying(100) NOT NULL DEFAULT 'Otros',
+    product_image text,
     qty_available integer NOT NULL DEFAULT 0,
     in_stock boolean NOT NULL DEFAULT FALSE,
     is_archived boolean NOT NULL DEFAULT FALSE,
@@ -67,3 +68,14 @@ COMMIT;
 
 -- 7. Migrations for pre-existing databases (idempotent)
 ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS category character varying(100) NOT NULL DEFAULT 'Otros';
+ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS product_image text;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_delivery_type_check') THEN
+        ALTER TABLE tokki_shop.orders
+            ADD CONSTRAINT orders_delivery_type_check
+            CHECK (delivery_type IN ('envio_nacional', 'delivery', 'retiro_tienda'))
+            NOT VALID;
+    END IF;
+END $$;

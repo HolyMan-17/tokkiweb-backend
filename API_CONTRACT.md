@@ -1,6 +1,6 @@
 # Tokki Shop Backend API Contract
 
-**Version:** 1.3.0  
+**Version:** 1.4.0  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
 **Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders`. Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
@@ -257,7 +257,7 @@ Processes a full checkout: finds/creates the client, validates & deducts product
     "country_code": "+58",
     "tlf_num": "041469996703"
   },
-  "delivery_type": "standard",
+  "delivery_type": "envio_nacional",
   "payment_method": "credit_card",
   "items": [
     { "product_id": 1, "product_qty": 2 },
@@ -265,6 +265,8 @@ Processes a full checkout: finds/creates the client, validates & deducts product
   ]
 }
 ```
+
+**Delivery types (enforced):** `delivery_type` must be exactly one of the allowed slugs — `envio_nacional`, `delivery`, `retiro_tienda` — validated by the controller and by a DB CHECK constraint. Display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") live in the frontend's `DELIVERY_TYPES` constant; the API only ever stores/returns slugs.
 
 **Phone format (flexible, international):**
 * Local form: `country_code` (`+58`) + `tlf_num` (`041469996703`) -> normalized & stored as E.164 (`+584146996703`).
@@ -277,6 +279,8 @@ Processes a full checkout: finds/creates the client, validates & deducts product
   "success": true,
   "data": {
     "order_id": 5,
+    "delivery_type": "envio_nacional",
+    "payment_method": "credit_card",
     "total_amount": "99.98",
     "items": [
       { "id": 1, "name": "Tokki Hoodie", "ordered_qty": 2, "price": "49.99" }
@@ -288,7 +292,7 @@ Processes a full checkout: finds/creates the client, validates & deducts product
 **Note:** every new order is created with `status: 'pending'` by the database default.
 
 #### Response `400 Bad Request`
-Any of: missing `client_info`/`delivery_type`/`payment_method`/`items`; missing client name/last_name/tlf_num; invalid phone number; empty `items` or `items` not an array; `product_qty <= 0`; insufficient stock.
+Any of: missing `client_info`/`delivery_type`/`payment_method`/`items`; missing client name/last_name/tlf_num; invalid phone number; `delivery_type` not one of the allowed slugs (`"delivery_type must be one of: envio_nacional, delivery, retiro_tienda."`); empty `items` or `items` not an array; `product_qty <= 0`; insufficient stock.
 ```json
 {
   "success": false,
