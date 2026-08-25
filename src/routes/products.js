@@ -11,6 +11,7 @@ router.post('/', requireAdmin, productsController.createProduct);
 router.patch('/:product_id', requireAdmin, productsController.updateProductDetails);
 router.delete('/:product_id', requireAdmin, productsController.deleteProduct);
 router.post('/:product_id/image', requireAdmin, uploadImage, productsController.setProductImage);
+router.delete('/:product_id/image', requireAdmin, productsController.removeProductImage);
 
 
 

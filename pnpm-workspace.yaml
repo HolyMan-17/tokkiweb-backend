@@ -1,4 +1,2 @@
 allowBuilds:
-  argon2: true
-  bcrypt: true
   unrs-resolver: false

@@ -19,6 +19,7 @@ Backend API for the **Tokki Shop** storefront: a product catalog with guest chec
 | `DATABASE_URL` | PostgreSQL connection string (required — server refuses to start without a reachable DB) |
 | `PORT` | HTTP port (default 3000) |
 | `CLERK_SECRET_KEY` | Clerk secret key (`sk_test_...`) — required for `clerkMiddleware()`; admin endpoints reject everything without it |
+| `CLERK_PUBLISHABLE_KEY` | Clerk publishable key (`pk_test_...`) — also required by `clerkMiddleware()` server-side (SDK builds auth context from it); safe to expose, same value the frontend holds |
 | `FRONTEND_ORIGINS` | Comma-separated CORS allowlist (default `http://localhost:5173`) |
 | `UPLOAD_DIR` | Root folder for stored product images (default `./uploads`; served at `/images`, gitignored) |
 | `PUBLIC_BASE_URL` | Base URL used to compose absolute `product_image_url`s (e.g. `http://localhost:3000`); empty → relative URLs |
@@ -72,7 +73,7 @@ Optional client field (`clients.cedula VARCHAR(12) UNIQUE`, nullable). Always pa
 `orders.delivery_type` is enforced at both layers: the controller rejects anything outside `['envio_nacional', 'delivery', 'retiro_tienda']` with 400, and a DB CHECK constraint (`orders_delivery_type_check`, added `NOT VALID` so legacy rows survive) backstops it. The API stores/returns **slugs only**; accented display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") are a frontend concern (`DELIVERY_TYPES` in `src/constants/index.ts`). Keep the two lists in sync manually — same discipline as categories.
 
 ### Images
-Product images live on disk under `UPLOAD_DIR`, one WebP per product: UUID keys shaped `products/<uuid>.webp` (sharp-normalized ≤1600px, q82). The DB stores **the key only** (`products.product_image`) — never store absolute URLs; responses compose `product_image_url` at response time via `toPublicImageUrl`/`attachImageUrls`. Uploads go through `uploadImage` (`src/middleware/upload.js`): memory storage, 5 MB cap, declared-mime allowlist **plus magic-byte sniff** (headers are spoofable). File lifecycle discipline: save file → transactional DB update → cleanup on failure; a replaced/archived image's file is deleted only after its commit succeeds (best-effort unlink, log-and-continue). Static serving: `/images` mounts `UPLOAD_DIR` in `src/app.js` with 7-day immutable cache — safe because keys are content-immutable UUIDs.
+Product images live on disk under `UPLOAD_DIR`, one WebP per product: UUID keys shaped `products/<uuid>.webp` (sharp-normalized ≤1600px, q82). The DB stores **the key only** (`products.product_image`) — never store absolute URLs; responses compose `product_image_url` at response time via `toPublicImageUrl`/`attachImageUrls`. Uploads go through `uploadImage` (`src/middleware/upload.js`): memory storage, 5 MB cap, declared-mime allowlist **plus magic-byte sniff** (headers are spoofable). File lifecycle discipline: save file → transactional DB update → cleanup on failure; a replaced/archived image's file is deleted only after its commit succeeds (best-effort unlink, log-and-continue). Removing an image (`clearProductImage`, `DELETE /api/products/:id/image`) is idempotent — no image set → success no-op. Static serving: `/images` mounts `UPLOAD_DIR` in `src/app.js` with 7-day immutable cache — safe because keys are content-immutable UUIDs.
 
 ### Code style
 ES Modules everywhere (`import`/`export`). Controllers hold SQL inline as template literals with `$1` params — no ORM, no query builder by design (Level 2 architecture). No comments-heavy style; match existing naming (`c_orders.js`, `c_products.js`). No linter is configured yet.
@@ -86,13 +87,12 @@ Unit tests live in `tests/*.test.js` (Jest, ESM via `--experimental-vm-modules`)
 ## Gotchas & known quirks
 
 1. **Docs drift fast** — this repo's docs were written alongside features; if code and contract disagree, check git history and fix the doc in the same PR.
-2. `updateProductDetails` silently ignores a negative `qty_available` (falls back to current value) instead of rejecting.
-3. Express-generator leftovers still in `package.json`: `argon2`, `bcrypt`, `cookie-parser`, `debug`, `http-errors`, `morgan`, `pug` — unused, safe to remove (ROADMAP P3 #15).
-4. A stray empty file named `test` sits at the repo root; harmless leftover.
-5. `server.js` runs a startup DB ping before listening — if tests ever import it, they'll need a live DB. Import `src/app.js` for supertest instead.
-6. `.gitignore` excludes `.agents/` and `plans/` — scratch/planning artifacts go there; tracked docs stay at root.
-7. Schema changes: edit `src/schema/tokki_schema.sql` (it's `CREATE ... IF NOT EXISTS`, idempotent-ish but has no migration path — ROADMAP P3 #15). Keep `PROJECT_SUMMARY_AND_PLAN.md` §3 in sync when tables change.
-8. `orders.processed_by` is populated on cancel/approve via lazy upsert of the acting admin (`src/middleware/auth.js`). Older orders keep NULL.
+2. Field types are validated up front by `src/utils/productValidation.js` — invalid `product_price`/`qty_available` reject with 400 instead of reaching SQL or being silently ignored.
+3. Express-generator leftovers were removed from `package.json` (Aug 2026); `pnpm-workspace.yaml` no longer needs argon2/bcrypt build approvals.
+4. `server.js` runs a startup DB ping before listening — if tests ever import it, they'll need a live DB. Import `src/app.js` for supertest instead.
+5. `.gitignore` excludes `.agents/` and `plans/` — scratch/planning artifacts go there; tracked docs stay at root.
+6. Schema changes: edit `src/schema/tokki_schema.sql` (it's `CREATE ... IF NOT EXISTS`, idempotent-ish but has no migration path — ROADMAP P3 #15). Keep `PROJECT_SUMMARY_AND_PLAN.md` §3 in sync when tables change.
+7. `orders.processed_by` is populated on cancel/approve via lazy upsert of the acting admin (`src/middleware/auth.js`). Older orders keep NULL.
 
 ---
 
@@ -110,7 +110,8 @@ src/routes/orders.js       order routes (incl. /client/:id, /:id/cancel, /:id/ap
 src/controllers/c_products.js   catalog CRUD + soft delete + image upload orchestration (applyProductImage)
 src/controllers/c_orders.js     checkout transaction, listing, lifecycle transitions
 src/utils/validate.js      phone (E.164) + cedula normalization
+src/utils/productValidation.js  strict field-type validators (products create/patch, order items)
 src/utils/storage.js       image storage: saveProductImage / deleteProductImage / cleanupProductImages / attachImageUrls / toPublicImageUrl
 src/schema/tokki_schema.sql authoritative DDL (schema tokki_shop)
-tests/                     unit tests: validate (phone+cedula), storage, upload, product-image, image-cleanup
+tests/                     unit tests: validate (phone+cedula), product-validation, storage, upload, product-image, image-cleanup
 ```

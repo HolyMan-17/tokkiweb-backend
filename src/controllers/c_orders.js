@@ -1,6 +1,7 @@
 import * as db from '../config/db.js';
-import { normalizeAndValidatePhone, normalizeAndValidateCedula } from '../utils/validate.js';
+import { normalizeAndValidatePhone } from '../utils/validate.js';
 import { upsertAdminUser } from '../middleware/auth.js';
+import { validateOrderItems } from '../utils/productValidation.js';
 
 const ALLOWED_DELIVERY_TYPES = ['envio_nacional', 'delivery', 'retiro_tienda'];
 
@@ -30,6 +31,10 @@ export const ordersController = {
             }
             if (!ALLOWED_DELIVERY_TYPES.includes(delivery_type)){
                 return res.status(400).json({success: false, message: "delivery_type must be one of: envio_nacional, delivery, retiro_tienda."})
+            }
+            const itemsCheck = validateOrderItems(items);
+            if (!itemsCheck.ok){
+                return res.status(400).json({success: false, message: itemsCheck.message})
             }
             const queryClient = 'SELECT client_id FROM tokki_shop.clients WHERE tlf_num=$1';
             const phone = [normalizedPhone];

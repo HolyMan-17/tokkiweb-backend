@@ -1,5 +1,6 @@
 import * as db from '../config/db.js';
 import { saveProductImage, deleteProductImage, toPublicImageUrl, attachImageUrls, cleanupProductImages } from '../utils/storage.js';
+import { validateProductCreate, validateProductPatch } from '../utils/productValidation.js';
 
 export const applyProductImage = async (deps, productId, buffer) => {
     const state = await deps.loadProductState(productId);
@@ -37,6 +38,35 @@ export const applyProductImage = async (deps, productId, buffer) => {
     }
 
     return { ok: true, imageKey: newKey };
+};
+
+export const clearProductImage = async (deps, productId) => {
+    const state = await deps.loadProductState(productId);
+
+    if (!state?.exists){
+        return { status: 404, message: 'Product was not found.' };
+    }
+    if (state.is_archived){
+        return { status: 404, message: 'Product is archived.' };
+    }
+
+    let persisted;
+    try{
+        persisted = await deps.persistKey(productId);
+    }catch(err){
+        return { error: err };
+    }
+
+    if (persisted === false){
+        return { status: 404, message: 'Product is archived.' };
+    }
+
+    const oldKey = state.current_image_key;
+    if (oldKey){
+        await deps.removeFile(oldKey);
+    }
+
+    return { ok: true };
 };
 
 export const productsController = {
@@ -94,14 +124,9 @@ export const productsController = {
         const dbClient = await db.getClient();
         try{
             const {product_name, product_price, product_description, category, qty_available} = req.body;
-            if (!product_name || !product_price || product_description === undefined || qty_available === undefined){
-                return res.status(400).json({success: false, message: "All product fields are required!"})
-            }
-            if (typeof category !== 'string' || category.trim() === '' || category.trim().length > 100){
-                return res.status(400).json({success: false, message: "A valid product category is required."})
-            }
-            if (qty_available < 0){
-                return res.status(400).json({success: false, message: "Product quantity can't be negative."})
+            const check = validateProductCreate(req.body);
+            if (!check.ok){
+                return res.status(400).json({success: false, message: check.message})
             }
             const in_stock = qty_available > 0 ? true : false;
             const createQuery = `INSERT INTO
@@ -133,8 +158,9 @@ export const productsController = {
             const productId = req.params.product_id;
             const {product_name, product_price, product_description, category, qty_available} = req.body;
 
-            if (category !== undefined && (typeof category !== 'string' || category.trim() === '' || category.trim().length > 100)){
-                return res.status(400).json({success: false, message: "A valid product category is required."})
+            const check = validateProductPatch(req.body);
+            if (!check.ok){
+                return res.status(400).json({success: false, message: check.message})
             }
 
             const queryArchive = await db.query('SELECT is_archived FROM tokki_shop.products WHERE product_id = $1', [productId]);
@@ -148,7 +174,7 @@ export const productsController = {
             if(is_archived){
                 return res.status(404).json({success: false, message: "Product is archived."});
             }
-            
+
 
             if(product_name === undefined && product_price === undefined && product_description === undefined &&
                 qty_available === undefined && category === undefined){
@@ -161,7 +187,7 @@ export const productsController = {
             const updatedPrice = product_price !== undefined ? product_price : checkQuery.rows[0].product_price;
             const updatedDescription = product_description !== undefined ? product_description : checkQuery.rows[0].product_description;
             const updatedCategory = category !== undefined ? category.trim() : checkQuery.rows[0].category;
-            const updatedQuantity = (qty_available !== undefined && qty_available >= 0) ? qty_available : checkQuery.rows[0].qty_available;
+            const updatedQuantity = qty_available !== undefined ? qty_available : checkQuery.rows[0].qty_available;
             const updatedStockStatus = updatedQuantity > 0 ? true : false
 
             const updateQuery = `
@@ -272,6 +298,66 @@ export const productsController = {
                 data: {
                     product_id: productId,
                     product_image_url: toPublicImageUrl(result.imageKey)
+                }
+            });
+        }catch(err){
+            next(err);
+        }finally{
+            if(dbClient){
+                await dbClient.release();
+            }
+        }
+    },
+
+    async removeProductImage(req, res, next) {
+        const dbClient = await db.getClient();
+        try{
+            const productId = req.params.product_id;
+
+            const result = await clearProductImage({
+                loadProductState: async (id) => {
+                    const q = await db.query(
+                        'SELECT is_archived, product_image FROM tokki_shop.products WHERE product_id = $1',
+                        [id]
+                    );
+                    if (q.rows.length === 0){
+                        return { exists: false };
+                    }
+                    return {
+                        exists: true,
+                        is_archived: q.rows[0].is_archived,
+                        current_image_key: q.rows[0].product_image
+                    };
+                },
+                persistKey: async (id) => {
+                    await dbClient.query('BEGIN');
+                    try{
+                        const uq = await dbClient.query(
+                            'UPDATE tokki_shop.products SET product_image = NULL WHERE product_id = $1 AND is_archived = false RETURNING product_id',
+                            [id]
+                        );
+                        await dbClient.query('COMMIT');
+                        return uq.rows.length > 0;
+                    }catch(e){
+                        await dbClient.query('ROLLBACK');
+                        throw e;
+                    }
+                },
+                removeFile: (key) => deleteProductImage(key)
+            }, productId);
+
+            if (result.error){
+                return next(result.error);
+            }
+            if (!result.ok){
+                return res.status(result.status).json({ success: false, message: result.message });
+            }
+
+            return res.status(200).json({
+                success: true,
+                data: {
+                    product_id: productId,
+                    product_image_url: null
                 }
             });
         }catch(err){
