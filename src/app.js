@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { clerkMiddleware } from '@clerk/express';
 import * as db from './config/db.js';
+import { resolveUploadDir } from './utils/storage.js';
 import apiRouter from './routes/index.js';
 
 const app = express();
@@ -14,6 +15,7 @@ const allowedOrigins = (process.env.FRONTEND_ORIGINS || 'http://localhost:5173')
 app.use(cors({ origin: allowedOrigins }));  // Allows your React frontend to connect to this API
 app.use(express.json());              // Allows your server to read JSON sent in request bodies
 app.use(express.urlencoded({ extended: true })); // Parses URL-encoded form data
+app.use('/images', express.static(resolveUploadDir(), { maxAge: '7d', immutable: true }));
 app.use(clerkMiddleware());
 app.use('/api', apiRouter);
 

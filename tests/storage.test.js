@@ -6,7 +6,8 @@ import sharp from 'sharp';
 import {
     saveProductImage,
     deleteProductImage,
-    toPublicImageUrl
+    toPublicImageUrl,
+    attachImageUrls
 } from '../src/utils/storage.js';
 
 const makePng = async (width, height = 100) =>
@@ -138,5 +139,60 @@ describe('toPublicImageUrl', () => {
         process.env.PUBLIC_BASE_URL = 'http://localhost:3000';
         expect(toPublicImageUrl(null)).toBeNull();
         expect(toPublicImageUrl(undefined)).toBeNull();
+    });
+});
+
+describe('attachImageUrls', () => {
+    const ORIGINAL_BASE = process.env.PUBLIC_BASE_URL;
+
+    beforeEach(() => {
+        process.env.PUBLIC_BASE_URL = 'http://localhost:3000';
+    });
+
+    afterEach(() => {
+        if (ORIGINAL_BASE === undefined) {
+            delete process.env.PUBLIC_BASE_URL;
+        } else {
+            process.env.PUBLIC_BASE_URL = ORIGINAL_BASE;
+        }
+    });
+
+    test('maps an array of rows: strips the raw key and adds the public url', () => {
+        const rows = [
+            { product_id: 1, product_name: 'A', product_image: 'products/k1.webp' },
+            { product_id: 2, product_name: 'B', product_image: null },
+            { product_id: 3, product_name: 'C' }
+        ];
+
+        const result = attachImageUrls(rows);
+
+        expect(result).toEqual([
+            { product_id: 1, product_name: 'A', product_image_url: 'http://localhost:3000/images/products/k1.webp' },
+            { product_id: 2, product_name: 'B', product_image_url: null },
+            { product_id: 3, product_name: 'C', product_image_url: null }
+        ]);
+    });
+
+    test('accepts a single row object', () => {
+        const result = attachImageUrls({ product_id: 9, product_image: 'products/k2.webp' });
+
+        expect(result).toEqual({
+            product_id: 9,
+            product_image_url: 'http://localhost:3000/images/products/k2.webp'
+        });
+    });
+
+    test('does not mutate the input row', () => {
+        const row = { product_id: 5, product_image: 'products/k3.webp' };
+
+        attachImageUrls(row);
+
+        expect(row.product_image).toBe('products/k3.webp');
+        expect(row.product_image_url).toBeUndefined();
+    });
+
+    test('returns null for null input and [] for empty arrays', () => {
+        expect(attachImageUrls(null)).toBeNull();
+        expect(attachImageUrls([])).toEqual([]);
     });
 });

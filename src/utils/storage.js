@@ -51,3 +51,37 @@ export const toPublicImageUrl = (key) => {
     const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
     return `${base}/images/${key}`;
 };
+
+const withImageUrl = (row) => {
+    if (!row || typeof row !== 'object'){
+        return row;
+    }
+    const { product_image, ...rest } = row;
+    return { ...rest, product_image_url: toPublicImageUrl(product_image) };
+};
+
+export const attachImageUrls = (rows) => {
+    if (rows === null || rows === undefined){
+        return rows;
+    }
+    if (Array.isArray(rows)){
+        return rows.map(withImageUrl);
+    }
+    return withImageUrl(rows);
+};
+
+export const cleanupProductImages = async (keys, removeFile) => {
+    const candidates = Array.isArray(keys) ? keys : [keys];
+    const unique = [...new Set(candidates.filter((key) => key))];
+
+    let removed = 0;
+    for (const key of unique){
+        try{
+            if (await removeFile(key)){
+                removed += 1;
+            }
+        }catch{
+        }
+    }
+    return removed;
+};

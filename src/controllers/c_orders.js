@@ -1,5 +1,5 @@
 import * as db from '../config/db.js';
-import { normalizeAndValidatePhone } from '../utils/validate.js';
+import { normalizeAndValidatePhone, normalizeAndValidateCedula } from '../utils/validate.js';
 import { upsertAdminUser } from '../middleware/auth.js';
 
 const ALLOWED_DELIVERY_TYPES = ['envio_nacional', 'delivery', 'retiro_tienda'];
@@ -15,6 +15,11 @@ export const ordersController = {
             }
             if(!client_info.name || !client_info.last_name || !client_info.tlf_num){
                 return res.status(400).json({success: false, message: "All client info fields are required."})
+            }
+            const { cedula } = client_info;
+            const normalizedCedula = normalizeAndValidateCedula(cedula);
+            if(typeof cedula === 'string' && cedula.trim() && !normalizedCedula){
+                return res.status(400).json({success: false, message: "Invalid cedula format."})
             }
             const normalizedPhone = normalizeAndValidatePhone(client_info.country_code, client_info.tlf_num);
             if(!normalizedPhone){
@@ -34,10 +39,10 @@ export const ordersController = {
                 client_id = resquery.rows[0].client_id;
             }else{
                 await dbClient.query('BEGIN');
-                const insertQuery = `INSERT INTO tokki_shop.clients(name, last_name, tlf_num) VALUES($1, $2, $3) RETURNING
+                const insertQuery = `INSERT INTO tokki_shop.clients(tlf_num, cedula, name, last_name) VALUES($1, $2, $3, $4) RETURNING
                 client_id, name, last_name, tlf_num
                 `;
-                const values = [client_info.name, client_info.last_name, normalizedPhone];
+                const values = [normalizedPhone, normalizedCedula, client_info.name, client_info.last_name];
                 const newClientRes = await dbClient.query(insertQuery, values);
                 await dbClient.query('COMMIT');
                 client_id = newClientRes.rows[0].client_id;
@@ -113,14 +118,14 @@ export const ordersController = {
     async getAllOrders(req, res, next){
         try{
             const getQuery = `
-                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount, ord.status,
+                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, c.cedula, ord.total_amount, ord.status,
                             COUNT(o_i.product_id) AS item_count, ord.created_at
                             FROM tokki_shop.orders as ord 
                             INNER JOIN tokki_shop.clients as c 
                             ON ord.client_id=c.client_id 
                             INNER JOIN tokki_shop.order_items as o_i 
                             ON o_i.order_id=ord.order_id 
-                            GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num, ord.status
+                            GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num, c.cedula, ord.status
                             ORDER BY ord.order_id DESC;
                             `;
             const resGet = await db.query(getQuery);
@@ -140,7 +145,7 @@ export const ordersController = {
         try{
             const order_id = req.params.order_id;
             const getOrder = `
-                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount, ord.status,
+                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, c.cedula, ord.total_amount, ord.status,
                             o_i.product_name, 
                             o_i.product_qty, o_i.product_price,
                             (o_i.product_qty * o_i.product_price) AS product_total,
@@ -164,7 +169,8 @@ export const ordersController = {
                 client: {
                     name: orderQuery.rows[0].name,
                     last_name: orderQuery.rows[0].last_name,
-                    tlf_num: orderQuery.rows[0].tlf_num
+                    tlf_num: orderQuery.rows[0].tlf_num,
+                    cedula: orderQuery.rows[0].cedula
                 },
                 total_amount: orderQuery.rows[0].total_amount,
                 created_at: orderQuery.rows[0].created_at,
@@ -185,14 +191,14 @@ export const ordersController = {
     async getClientHistory(req, res, next){
         const client_id = req.params.client_id;
         const getHistory = `
-                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, ord.total_amount, ord.status,
+                            SELECT ord.order_id, c.name, c.last_name, c.tlf_num, c.cedula, ord.total_amount, ord.status,
                             COUNT(o_i.product_id) AS item_count, ord.created_at
                             FROM tokki_shop.orders as ord 
                             INNER JOIN tokki_shop.clients as c 
                             ON ord.client_id=c.client_id 
                             INNER JOIN tokki_shop.order_items as o_i 
                             ON o_i.order_id=ord.order_id WHERE ord.client_id = $1
-                            GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num, ord.status
+                            GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num, c.cedula, ord.status
                             ORDER BY ord.order_id DESC;
                             `;
         try{

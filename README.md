@@ -23,6 +23,7 @@ PostgreSQL, Express.js and Node.JS backend for the Tokki online store.
 | `POST /api/products` | Create product |
 | `PATCH /api/products/:product_id` | Partial product update |
 | `DELETE /api/products/:product_id` | Soft-delete (archive) product |
+| `POST /api/products/:product_id/image` | Upload/replace product image (multipart, WebP-normalized) |
 | `POST /api/orders` | Checkout: find/create client, lock & deduct stock, create order |
 | `GET /api/orders` | Dashboard list of all orders |
 | `GET /api/orders/client/:client_id` | One client's order history |
@@ -31,7 +32,7 @@ PostgreSQL, Express.js and Node.JS backend for the Tokki online store.
 | `PATCH /api/orders/:order_id/approve` | Approve a pending order |
 
 **Public:** catalog reads (`GET /api/products*`) + guest checkout (`POST /api/orders`).
-**Admin-only:** product create/update/archive, order views, cancel/approve — requires a Clerk session with `publicMetadata.role` of `owner` or `tech`.## Docs
+**Admin-only:** product create/update/archive, image upload, order views, cancel/approve — requires a Clerk session with `publicMetadata.role` of `owner` or `tech`.## Docs
 - [`API_CONTRACT.md`](API_CONTRACT.md) — request/response contracts for every endpoint
 - [`PROJECT_SUMMARY_AND_PLAN.md`](PROJECT_SUMMARY_AND_PLAN.md) — architecture decisions, DB schema, implemented behavior
 - [`ROADMAP.md`](ROADMAP.md) — prioritized backlog of known gaps and next features
@@ -40,7 +41,7 @@ PostgreSQL, Express.js and Node.JS backend for the Tokki online store.
 ## Getting started
 ```bash
 pnpm install
-# configure .env with DATABASE_URL
+# configure .env with DATABASE_URL (see CONTEXT.md for all env vars)
 pnpm dev
 ```
 Server verifies the DB connection before listening on `PORT` (default 3000).

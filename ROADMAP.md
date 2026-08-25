@@ -17,13 +17,11 @@ Controllers call `next(err)` on DB failures; `src/app.js` now defines a 4-arg er
 - Map more codes where relevant (`23502` not_null, `08P01`/connection errors).
 - Consider hiding stack logs from stdout in production (structured logging, ROADMAP P3 #15).
 
-### [ ] 3. Fix `success` string-literal bugs
-In `src/controllers/c_products.js`:
-- Line ~14 (`getAllProducts` empty case): `{success:"true", ...}` — string `"true"` instead of boolean.
-- Line ~33 (`getProduct` 404) and line ~84 (`updateProductDetails` 404): `success:"false"`.
+### [x] 3. Fix `success` string-literal bugs
+Done: every response in `src/controllers/c_products.js` now uses boolean `success: true/false`.
 
-### [ ] 4. Replace wrong status code for archived-product update
-`updateProductDetails` returns **401 Unauthorized** when the product is archived; it should be **404** (or 409). Update `API_CONTRACT.md` accordingly once fixed.
+### [x] 4. Replace wrong status code for archived-product update
+Done: `updateProductDetails` returns **404** (`"Product is archived."`) instead of 401; `API_CONTRACT.md` §1.4 documents it.
 
 ---
 

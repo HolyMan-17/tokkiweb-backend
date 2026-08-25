@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS tokki_shop.clients
     name character varying(100) NOT NULL,
     last_name character varying(100) NOT NULL,
     tlf_num character varying(20) UNIQUE NOT NULL,
-    PRIMARY KEY (client_id)
+    cedula character varying(12),
+    PRIMARY KEY (client_id),
+    CONSTRAINT clients_cedula_unique UNIQUE (cedula)
 );
 
 -- 3. USERS (Maps Clerk User Accounts to internal system roles)
@@ -69,6 +71,17 @@ COMMIT;
 -- 7. Migrations for pre-existing databases (idempotent)
 ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS category character varying(100) NOT NULL DEFAULT 'Otros';
 ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS product_image text;
+
+ALTER TABLE tokki_shop.clients ADD COLUMN IF NOT EXISTS cedula character varying(12);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'clients_cedula_unique') THEN
+        ALTER TABLE tokki_shop.clients
+            ADD CONSTRAINT clients_cedula_unique
+            UNIQUE (cedula);
+    END IF;
+END $$;
 
 DO $$
 BEGIN

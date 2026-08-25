@@ -42,6 +42,7 @@ Stores contact details for customers placing orders. Identified uniquely by phon
 * `name` (VARCHAR(100) NOT NULL)
 * `last_name` (VARCHAR(100) NOT NULL)
 * `tlf_num` (VARCHAR(20) UNIQUE NOT NULL)
+* `cedula` (VARCHAR(12) UNIQUE, nullable) -- Venezuelan ID, canonical "V-12345678"; NULL allowed for legacy rows
 
 ### B. `users` Table (Clerk Admin Mapping)
 Maps Clerk authenticated user IDs to internal administrative accounts.
@@ -56,6 +57,7 @@ Maps Clerk authenticated user IDs to internal administrative accounts.
 * `product_price` (NUMERIC(9, 2) NOT NULL)
 * `product_description` (TEXT NOT NULL)
 * `category` (VARCHAR(100) NOT NULL DEFAULT `'Otros'`) -- display name; values mirror the frontend `CATEGORIES` constant
+* `product_image` (TEXT, nullable) -- storage key shaped `products/<uuid>.webp`; public URLs are composed at response time, never stored
 * `qty_available` (INTEGER NOT NULL DEFAULT 0)
 * `in_stock` (BOOLEAN NOT NULL DEFAULT FALSE)
 * `is_archived` (BOOLEAN NOT NULL DEFAULT FALSE) -- Soft-delete flag
@@ -91,6 +93,11 @@ Preserves historical item names and prices at time of purchase.
 
 **Category convention:** stored as the exact display name the frontend renders and matches on (`p.category === CATEGORIES[i].name`); the allowed set lives in the frontend's `src/constants/index.ts`. Pre-category rows default to `'Otros'` via an idempotent `ALTER TABLE` at the bottom of `tokki_schema.sql`.
 
+**Product images:** every product response carries `product_image_url`, composed at response time by `attachImageUrls`/`toPublicImageUrl` — raw keys never leave the API.
+* **`POST /api/products/:product_id/image`** *(admin)*: multipart upload gated by `uploadImage` (memory storage, 5 MB cap, declared-mime allowlist + magic-byte sniff), normalized to WebP (≤1600px, q82) by `saveProductImage`, key persisted transactionally with an `is_archived = false` guard; replaced files are deleted only after commit, failed updates clean up the new file (`applyProductImage` orchestrates the save → persist → cleanup sequence).
+* Archiving a product deletes its stored file post-commit (`cleanupProductImages`, best-effort).
+* Stored images are served statically at `/images/<key>` with 7-day immutable caching.
+
 ---
 
 ## 🛒 5. Completed & Verified Features: Orders API (`/api/orders`)
@@ -103,7 +110,8 @@ Preserves historical item names and prices at time of purchase.
     "name": "Jane",
     "last_name": "Doe",
     "country_code": "+58",
-    "tlf_num": "041469996703"
+    "tlf_num": "041469996703",
+    "cedula": "V-12345678"
   },
   "delivery_type": "envio_nacional",
   "payment_method": "credit_card",
@@ -121,7 +129,7 @@ Preserves historical item names and prices at time of purchase.
 
 **Validation performed (in order):**
 1. Presence of `client_info`, `delivery_type`, `payment_method`, `items`.
-2. Client name/last_name/tlf_num present.
+2. Client name/last_name/tlf_num present; optional `cedula` normalized & validated (`"Invalid cedula format."` on bad input).
 3. Phone number is valid international format.
 4. `delivery_type` / `payment_method` truthy; `items` is a non-empty array; `delivery_type` ∈ allowed slugs (`envio_nacional`, `delivery`, `retiro_tienda` — also enforced by a DB CHECK constraint).
 5. Per item: product exists (404), `product_qty > 0` (400), stock sufficient (400).
@@ -182,5 +190,4 @@ Transitions `'pending'` -> `'approved'` when the shop owner confirms an order. N
 All originally planned endpoints are now implemented. The forward-looking backlog lives in [`ROADMAP.md`](ROADMAP.md); agent-oriented project context lives in [`CONTEXT.md`](CONTEXT.md). Highlights of known gaps:
 
 * **Auth wired:** `clerkMiddleware()` + `requireAdmin` protect product mutations and all order endpoints except checkout (see §2). Remaining: webhook-based user sync, token-attachment on frontend admin calls.
-* **Test coverage:** unit tests exist only for phone validation (`tests/validate.test.js`); controller/integration tests (supertest) are pending.
-* **Minor response bugs:** a couple of `success: "true"` / `success: "false"` string literals in `c_products.js` (see ROADMAP.md P1).
+* **Test coverage:** 73 unit tests across five suites — phone + cedula validation (`tests/validate.test.js`), image storage (`storage.test.js`), upload middleware (`upload.test.js`), image-upload orchestration (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).

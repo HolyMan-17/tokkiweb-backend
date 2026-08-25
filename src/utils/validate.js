@@ -20,3 +20,12 @@ export const normalizeAndValidatePhone = (country_code, tlf_num) => {
     const full = code + cleaned;
     return /^\+[1-9]\d{7,14}$/.test(full) ? full : null;
 };
+
+export const normalizeAndValidateCedula = (raw) => {
+    if (typeof raw !== 'string') return null;
+
+    const cleaned = raw.trim().replace(/\s+/g, '').toUpperCase();
+
+    const match = cleaned.match(/^([VE])-?(\d{6,8})$/);
+    return match ? `${match[1]}-${match[2]}` : null;
+};

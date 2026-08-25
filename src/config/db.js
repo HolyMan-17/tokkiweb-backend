@@ -25,8 +25,7 @@ export const query = (text, params) =>{
 
 // PG NODE MODULE TRANSACTION CLIENT CODE (SEE DOCUMENTATION)
 
-export const getClient = async () => {
-  const client = await pool.connect()
+export const getClient = async () => {  const client = await pool.connect()
   const query = client.query
   const release = client.release
   // set a timeout of 5 seconds, after which we will log this client's last query
@@ -49,3 +48,5 @@ export const getClient = async () => {
   }
   return client
 }
+
+export const endPool = () => pool.end();

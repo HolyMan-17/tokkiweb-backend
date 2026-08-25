@@ -1,6 +1,6 @@
 # Tokki Shop Backend API Contract
 
-**Version:** 1.4.0  
+**Version:** 1.6.0  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
 **Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders`. Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
@@ -64,7 +64,8 @@ Retrieves all non-archived products available in the store catalog.
       "product_description": "Comfortable oversized cotton hoodie",
       "category": "Ropa",
       "qty_available": 25,
-      "in_stock": true
+      "in_stock": true,
+      "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
     }
   ]
 }
@@ -92,7 +93,8 @@ Retrieves details for a specific active product by its ID.
     "product_description": "Comfortable oversized cotton hoodie",
     "category": "Ropa",
     "qty_available": 25,
-    "in_stock": true
+    "in_stock": true,
+    "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
   }
 }
 ```
@@ -139,10 +141,13 @@ Adds a new product to the catalog. Automatically calculates `in_stock = true` if
     "category": "Ropa",
     "qty_available": 50,
     "in_stock": true,
-    "is_archived": false
+    "is_archived": false,
+    "product_image_url": null
   }
 }
 ```
+
+**Note:** new products start without an image (`product_image_url: null`); upload one via [§1.6](#16-upload--replace-product-image).
 
 #### Response `400 Bad Request`
 ```json
@@ -189,9 +194,13 @@ Updates specific details of an existing product. If `qty_available` is modified,
     "product_description": "100% organic cotton graphic tee",
     "category": "Ropa",
     "qty_available": 10,
-    "in_stock": true
+    "in_stock": true,
+    "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
   }
 }
+```
+
+**Note:** this endpoint never changes the image — uploads go through [§1.6](#16-upload--replace-product-image).
 ```
 
 #### Response `400 Bad Request`
@@ -203,10 +212,18 @@ Updates specific details of an existing product. If `qty_available` is modified,
 ```
 
 #### Response `404 Not Found`
+Product does not exist:
 ```json
 {
   "success": false,
-  "message": "Product ID is not valid"
+  "message": "Product was not found."
+}
+```
+Product exists but is archived (same status, distinct message):
+```json
+{
+  "success": false,
+  "message": "Product is archived."
 }
 ```
 
@@ -238,6 +255,45 @@ Archives a product by setting `is_archived = true`, `qty_available = 0`, and `in
 
 ---
 
+### 1.6 Upload / Replace Product Image
+Stores a product image: normalizes it to WebP (max width 1600px, quality 82), writes the file under `UPLOAD_DIR` with a content-immutable UUID key (`products/<uuid>.webp`), and persists **the key only** in `products.product_image` inside a transaction. Re-uploading generates a new key and deletes the replaced file only after the commit succeeds.
+
+* **Method:** `POST`
+* **Path:** `/api/products/:product_id/image` *(admin — see [Auth](#-general-response-format))*
+* **URL Params:** `product_id` (integer, required)
+* **Headers:** `Content-Type: multipart/form-data`
+* **Form field:** `image` (single file, required)
+
+**Constraints (enforced by `uploadImage` middleware):**
+* Declared type must be `image/jpeg`, `image/png`, or `image/webp` — anything else is rejected before parsing completes.
+* Bytes are verified via magic-byte sniffing; spoofed uploads (e.g. an `.jpg` containing text) are rejected.
+* Max size 5 MB.
+
+**Behavior notes:**
+* The uploaded file never touches disk unvalidated (memory storage).
+* If the DB update fails after saving, the just-saved file is removed (no orphans).
+* Archiving a product (§1.5) deletes its stored image file after commit; archived/missing products reject uploads with the same `404` contract as §1.4.
+* Images are served publicly at `/images/<key>` (7-day immutable cache); returned URLs are absolute when `PUBLIC_BASE_URL` is set, relative otherwise.
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "data": {
+    "product_id": 2,
+    "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
+  }
+}
+```
+
+#### Response `400 Bad Request`
+Any of: no file part (`"No image file was uploaded."`); file under an unexpected field name (`"Unexpected upload field: <field>. Use the \"image\" field."`); size over 5 MB (`"Image exceeds the 5 MB size limit."`); disallowed declared type (`"Unsupported image type. Allowed: jpeg, png, webp."`); bytes that are not a supported image (`"File content is not a supported image (jpeg, png, webp)."`).
+
+#### Response `404 Not Found`
+Same as §1.4 — `"Product was not found."` (missing) or `"Product is archived."`.
+
+---
+
 ## 🛒 2. Orders API (`/api/orders`)
 
 ### 2.1 Create Order (Checkout)
@@ -255,7 +311,8 @@ Processes a full checkout: finds/creates the client, validates & deducts product
     "name": "Jane",
     "last_name": "Doe",
     "country_code": "+58",
-    "tlf_num": "041469996703"
+    "tlf_num": "041469996703",
+    "cedula": "V-12345678"
   },
   "delivery_type": "envio_nacional",
   "payment_method": "credit_card",
@@ -267,6 +324,8 @@ Processes a full checkout: finds/creates the client, validates & deducts product
 ```
 
 **Delivery types (enforced):** `delivery_type` must be exactly one of the allowed slugs — `envio_nacional`, `delivery`, `retiro_tienda` — validated by the controller and by a DB CHECK constraint. Display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") live in the frontend's `DELIVERY_TYPES` constant; the API only ever stores/returns slugs.
+
+**Cedula rules:** `client_info.cedula` is optional (Venezuelan ID). Lenient input (`'v12345678'`, missing hyphen, stray spaces) is normalized to the canonical combined form `"V-12345678"` before storing; absent/null/empty stores `NULL` (legacy rows keep `NULL` too). Invalid values → `400` `"Invalid cedula format."`; a cedula already owned by another client → `409` `"Resource already exists."`. Stored on the `clients` row when the client is created (UNIQUE constraint); existing clients are never backfilled.
 
 **Phone format (flexible, international):**
 * Local form: `country_code` (`+58`) + `tlf_num` (`041469996703`) -> normalized & stored as E.164 (`+584146996703`).
@@ -330,6 +389,7 @@ Returns all orders with the buyer's info and a per-order distinct line-item coun
       "name": "Jane",
       "last_name": "Doe",
       "tlf_num": "+584146996703",
+      "cedula": "V-12345678",
       "total_amount": "99.98",
       "status": "pending",
       "item_count": 2,
@@ -368,7 +428,8 @@ Returns the order header, client info, and the full list of line items (name, qu
     "client": {
       "name": "Jane",
       "last_name": "Doe",
-      "tlf_num": "+584146996703"
+      "tlf_num": "+584146996703",
+      "cedula": "V-12345678"
     },
     "total_amount": "74.98",
     "created_at": "2026-08-04T12:00:00.000Z",
@@ -500,6 +561,7 @@ Returns every order placed by a specific client (same shape as the dashboard lis
       "name": "Jane",
       "last_name": "Doe",
       "tlf_num": "+584146996703",
+      "cedula": "V-12345678",
       "total_amount": "99.98",
       "status": "pending",
       "item_count": 2,
