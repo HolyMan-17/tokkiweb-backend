@@ -27,15 +27,11 @@ Done: `updateProductDetails` returns **404** (`"Product is archived."`) instead 
 
 ## P1 — Robustness & Validation
 
-### [ ] 5. Harden input validation
-Currently trusts body types; malformed JSON types can reach SQL or produce NaN totals.
-- Validate `product_price` is a positive number, `qty_available` is a non-negative integer (products).
-- Validate each `items[].product_id` is an integer and `product_qty` is a positive integer before hitting the DB (`createOrder` checks `product_qty <= 0` only *after* locking the row — move it earlier).
-- Consider `express-validator` or zod if validation grows.
+### [x] 5. Harden input validation
+Done via `src/utils/productValidation.js` (unit-tested, TDD): `validateProductCreate`/`validateProductPatch` enforce `product_price` positive finite number, `qty_available` non-negative **integer**, non-empty string fields, category rules; PATCH rejects invalid values instead of silently ignoring them. `validateOrderItems` checks each item's `product_id`/`product_qty` are positive integers in `createOrder` **before** any row locking (previously `product_qty <= 0` was only caught after taking the lock).
 
-### [ ] 6. Unknown client/product IDs should 404 consistently
-- `GET /api/orders/client/:client_id` returns 200 + "No orders have been placed by this client." for nonexistent clients. Check client existence first and return 404.
-- Non-integer `:order_id` / `:product_id` params fall through to Postgres errors → 500. Coerce/reject early with 400/404.
+### [x] 6. Unknown client/product IDs should 404 consistently
+Done via `parseIdParam` (`src/utils/params.js`, unit-tested): every `:product_id`/`:order_id`/`:client_id` handler rejects non-positive-integer params up front with 400 `"Invalid ID format."` instead of letting Postgres throw `22P02`. `GET /api/orders/client/:client_id` now checks client existence first → `404` `"Client doesn't exist."` (previously returned 200 with the empty-state message).
 
 ### [ ] 7. Constrain remaining enums at the DB level
 ~~`delivery_type`~~ done (controller allowlist + `orders_delivery_type_check`). `payment_method` is still free-form — add a CHECK constraint (or lookup table) once business confirms values (`pago_movil`, `bank_transfer`, `cash`, `zelle` per the frontend's `PAYMENT_METHODS`).
@@ -48,7 +44,7 @@ The find-or-create-client step commits its own mini-transaction before the main 
 ## P2 — Testing
 
 ### [ ] 9. Controller/integration tests
-Only `tests/validate.test.js` exists (15 passing unit tests). `supertest` is installed but unused.
+93 unit tests across 6 suites exist (validation ×2, storage, upload, product-image orchestration, image-cleanup) — but they exercise utils/middleware/pure orchestrators only. No test spins up routes against a real DB.
 - Spin up a test database (separate `DATABASE_URL`), apply `tokki_schema.sql`, seed fixtures.
 - Cover: products CRUD incl. archived behavior; order creation happy path; oversell rejection under stock contention; cancel restores stock exactly once; approve/cancel guards; 404s.
 - Note: `jest.config.js` uses `node --experimental-vm-modules`; keep ESM-compatible patterns.
@@ -74,7 +70,26 @@ Archived products are invisible to every endpoint. Add `GET /api/products?archiv
 ### [ ] 14. Client identification improvements
 Guest checkout keys clients on phone only; a repeat buyer who typos their name creates mismatched records. Consider letting authenticated users claim client records, or upsert name on reuse.
 
-### [ ] 15. Ops niceties
-- `.env.example` with `DATABASE_URL`, `PORT`, and (future) Clerk keys.
-- Structured logging (morgan/debug are installed but unused); remove dead deps (`argon2`, `bcrypt`, `cookie-parser`, `http-errors`, `pug` are express-generator leftovers).
+### [x] 15. Ops niceties
+- ~~`.env.example`~~ done (includes `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `UPLOAD_DIR`, `PUBLIC_BASE_URL`).
+- ~~Dead deps~~ removed Aug 2026 (`argon2`, `bcrypt`, `cookie-parser`, `debug`, `http-errors`, `morgan`, `pug`); stray root `test` file deleted.
+- Structured logging still pending (morgan was removed unused — wire `pino`/`winston` or keep minimal).
 - Migrations strategy: schema file is `CREATE TABLE IF NOT EXISTS` — introduce numbered migrations before the next schema change (e.g., status constraint widening).
+
+---
+
+## P4 — Image pipeline follow-ups
+
+The core image feature ships (upload/replace/remove, WebP normalization, immutable static serving). Deferred items:
+
+### [ ] 16. nginx in front of Node (VPS)
+Serve `/images/` directly from disk (sendfile, no Node round-trip) and proxy `/api` → Node. Also enables gzip/brotli for JSON.
+
+### [ ] 17. Uploads-dir backup cron (VPS)
+`UPLOAD_DIR` lives outside the repo — add a nightly `restic`/`rsync` of that directory to any remote target. Images are re-uploadable, so weekly is acceptable; nightly is cheap.
+
+### [ ] 18. Storage-provider swap path
+DB stores keys only and responses compose URLs from `PUBLIC_BASE_URL`, so moving to Cloudflare R2 later means rewriting `src/utils/storage.js` (~50 lines) + an rsync of existing files + env change. No DB migration needed.
+
+### [ ] 19. Client-side pre-compression (frontend)
+Backend already normalizes to WebP ≤1600px server-side; optional browser-side compression (`browser-image-compression`) would trim upload bandwidth on slow connections.

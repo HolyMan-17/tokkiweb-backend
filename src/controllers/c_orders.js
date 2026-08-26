@@ -1,6 +1,8 @@
 import * as db from '../config/db.js';
-import { normalizeAndValidatePhone, normalizeAndValidateCedula } from '../utils/validate.js';
+import { normalizeAndValidatePhone } from '../utils/validate.js';
 import { upsertAdminUser } from '../middleware/auth.js';
+import { validateOrderItems } from '../utils/productValidation.js';
+import { parseIdParam } from '../utils/params.js';
 
 const ALLOWED_DELIVERY_TYPES = ['envio_nacional', 'delivery', 'retiro_tienda'];
 
@@ -30,6 +32,10 @@ export const ordersController = {
             }
             if (!ALLOWED_DELIVERY_TYPES.includes(delivery_type)){
                 return res.status(400).json({success: false, message: "delivery_type must be one of: envio_nacional, delivery, retiro_tienda."})
+            }
+            const itemsCheck = validateOrderItems(items);
+            if (!itemsCheck.ok){
+                return res.status(400).json({success: false, message: itemsCheck.message})
             }
             const queryClient = 'SELECT client_id FROM tokki_shop.clients WHERE tlf_num=$1';
             const phone = [normalizedPhone];
@@ -143,7 +149,10 @@ export const ordersController = {
     
     async getSingleOrder(req, res, next){
         try{
-            const order_id = req.params.order_id;
+            const order_id = parseIdParam(req.params.order_id);
+            if (!order_id){
+                return res.status(400).json({success: false, message: "Invalid ID format."})
+            }
             const getOrder = `
                             SELECT ord.order_id, c.name, c.last_name, c.tlf_num, c.cedula, ord.total_amount, ord.status,
                             o_i.product_name, 
@@ -189,8 +198,16 @@ export const ordersController = {
     },
 
     async getClientHistory(req, res, next){
-        const client_id = req.params.client_id;
-        const getHistory = `
+        try{
+            const client_id = parseIdParam(req.params.client_id);
+            if (!client_id){
+                return res.status(400).json({success: false, message: "Invalid ID format."})
+            }
+            const clientCheck = await db.query('SELECT client_id FROM tokki_shop.clients WHERE client_id = $1', [client_id]);
+            if(clientCheck.rows.length === 0){
+                return res.status(404).json({success: false, message: "Client doesn't exist."})
+            }
+            const getHistory = `
                             SELECT ord.order_id, c.name, c.last_name, c.tlf_num, c.cedula, ord.total_amount, ord.status,
                             COUNT(o_i.product_id) AS item_count, ord.created_at
                             FROM tokki_shop.orders as ord 
@@ -201,7 +218,6 @@ export const ordersController = {
                             GROUP BY ord.order_id, c.name, c.last_name, c.tlf_num, c.cedula, ord.status
                             ORDER BY ord.order_id DESC;
                             `;
-        try{
             const historyQuery = await db.query(getHistory, [client_id]);
 
             if(historyQuery.rows.length === 0){
@@ -217,7 +233,10 @@ export const ordersController = {
     async cancelOrder(req, res, next){
         const dbClient = await db.getClient();
         try{
-            const orderId = req.params.order_id;
+            const orderId = parseIdParam(req.params.order_id);
+            if (!orderId){
+                return res.status(400).json({success: false, message: "Invalid ID format."})
+            }
             await dbClient.query('BEGIN');
             const getOrder =    ` 
                                     SELECT status
@@ -275,8 +294,11 @@ export const ordersController = {
 
     async approveOrder(req, res, next){
         const dbClient = await db.getClient();
-        const orderId = req.params.order_id;
         try{
+            const orderId = parseIdParam(req.params.order_id);
+            if (!orderId){
+                return res.status(400).json({success: false, message: "Invalid ID format."})
+            }
             await dbClient.query('BEGIN');
             const verifyOrder = `SELECT order_id, status FROM tokki_shop.orders WHERE order_id=$1 FOR UPDATE;`;
             const retrieveRow = await dbClient.query(verifyOrder, [orderId]);

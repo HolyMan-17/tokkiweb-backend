@@ -6,6 +6,7 @@ uploads/
 
 # Secrets & Environment
 .env
+.env.local
 
 # Agent & Planning files
 .agents/

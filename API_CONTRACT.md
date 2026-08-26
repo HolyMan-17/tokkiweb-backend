@@ -1,6 +1,8 @@
 # Tokki Shop Backend API Contract
 
-**Version:** 1.6.0  
+> **Versioning policy:** the backend has not shipped yet — versions stay in `0.x.y`. Features/behavior changes bump `x`, fixes/docs bump `y`. `1.0.0` is reserved for the first production deployment.
+
+**Version:** 0.9.1 *(pre-deploy — see versioning policy below)*  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
 **Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders`. Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
@@ -35,8 +37,8 @@ All API responses follow a standardized JSON envelope structure.
 ### Standard HTTP Status Codes
 * `200 OK`: Request succeeded (GET, PATCH, DELETE).
 * `201 Created`: Resource successfully created (POST).
-* `400 Bad Request`: Validation failure or missing required body fields.
-* `404 Not Found`: Resource ID does not exist in database or is archived.
+* `400 Bad Request`: Validation failure or missing required body fields. Malformed integer path params (`:product_id`, `:order_id`, `:client_id`) are rejected up front with `"Invalid ID format."`.
+* `404 Not Found`: Resource ID does not exist in database or is archived. A nonexistent `client_id` on `/api/orders/client/:id` also returns 404 (`"Client doesn't exist."`).
 * `500 Internal Server Error`: Unhandled server/database error.
 
 ---
@@ -68,6 +70,14 @@ Retrieves all non-archived products available in the store catalog.
       "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
     }
   ]
+}
+```
+
+#### Response `200 OK` (empty catalog)
+```json
+{
+  "success": true,
+  "message": "There's no registered products."
 }
 ```
 
@@ -156,13 +166,7 @@ Adds a new product to the catalog. Automatically calculates `in_stock = true` if
   "message": "All product fields are required!"
 }
 ```
-or, when `category` is missing/empty/too long:
-```json
-{
-  "success": false,
-  "message": "A valid product category is required."
-}
-```
+Other messages: `"A valid product category is required."` (missing/empty/over-100-chars category), `"Product quantity must be a whole number."` (non-integer `qty_available`). Field types are enforced strictly: `product_price` must be a positive finite number, `qty_available` a non-negative integer, names/descriptions non-empty strings.
 
 ---
 
@@ -210,6 +214,7 @@ Updates specific details of an existing product. If `qty_available` is modified,
   "message": "At least 1 product field needs to be updated."
 }
 ```
+Provided fields are type-validated before any DB access: `"product_price must be a positive number."`, `"Product quantity must be a whole number."`, `"Product quantity can't be negative."`, `"A valid product category is required."`. Invalid values are rejected — never silently ignored.
 
 #### Response `404 Not Found`
 Product does not exist:
@@ -294,6 +299,36 @@ Same as §1.4 — `"Product was not found."` (missing) or `"Product is archived.
 
 ---
 
+### 1.7 Remove Product Image
+
+Clears a product's image: nulls `products.product_image` inside a transaction, then deletes the stored file **only after the commit succeeds**.
+
+* **Method:** `DELETE`
+* **Path:** `/api/products/:product_id/image` *(admin — see [Auth](#-general-response-format))*
+* **URL Params:** `product_id` (integer, required)
+* **Request Body:** None
+
+**Behavior:**
+1. Missing or archived products reject with the same `404` contract as §1.4/§1.6.
+2. **Idempotent no-op:** if the product simply has no image, returns success anyway (`product_image_url: null`) — safe to call repeatedly.
+3. If two admins race, the file deletion is best-effort; a missing file is not an error.
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "data": {
+    "product_id": 2,
+    "product_image_url": null
+  }
+}
+```
+
+#### Response `404 Not Found`
+Same as §1.6 — `"Product was not found."` or `"Product is archived."`.
+
+---
+
 ## 🛒 2. Orders API (`/api/orders`)
 
 ### 2.1 Create Order (Checkout)
@@ -315,7 +350,7 @@ Processes a full checkout: finds/creates the client, validates & deducts product
     "cedula": "V-12345678"
   },
   "delivery_type": "envio_nacional",
-  "payment_method": "credit_card",
+  "payment_method": "pago_movil",
   "items": [
     { "product_id": 1, "product_qty": 2 },
     { "product_id": 2, "product_qty": 1 }
@@ -326,6 +361,8 @@ Processes a full checkout: finds/creates the client, validates & deducts product
 **Delivery types (enforced):** `delivery_type` must be exactly one of the allowed slugs — `envio_nacional`, `delivery`, `retiro_tienda` — validated by the controller and by a DB CHECK constraint. Display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") live in the frontend's `DELIVERY_TYPES` constant; the API only ever stores/returns slugs.
 
 **Cedula rules:** `client_info.cedula` is optional (Venezuelan ID). Lenient input (`'v12345678'`, missing hyphen, stray spaces) is normalized to the canonical combined form `"V-12345678"` before storing; absent/null/empty stores `NULL` (legacy rows keep `NULL` too). Invalid values → `400` `"Invalid cedula format."`; a cedula already owned by another client → `409` `"Resource already exists."`. Stored on the `clients` row when the client is created (UNIQUE constraint); existing clients are never backfilled.
+
+**Payment methods:** `payment_method` currently accepts any non-empty string server-side (no DB constraint yet — see ROADMAP #7), but the frontend only ever sends the slugs from its `PAYMENT_METHODS` constant: `pago_movil`, `binance`, `zelle`, `paypal`, `cash`. Use those in integrations.
 
 **Phone format (flexible, international):**
 * Local form: `country_code` (`+58`) + `tlf_num` (`041469996703`) -> normalized & stored as E.164 (`+584146996703`).
@@ -339,7 +376,7 @@ Processes a full checkout: finds/creates the client, validates & deducts product
   "data": {
     "order_id": 5,
     "delivery_type": "envio_nacional",
-    "payment_method": "credit_card",
+    "payment_method": "pago_movil",
     "total_amount": "99.98",
     "items": [
       { "id": 1, "name": "Tokki Hoodie", "ordered_qty": 2, "price": "49.99" }
@@ -351,7 +388,7 @@ Processes a full checkout: finds/creates the client, validates & deducts product
 **Note:** every new order is created with `status: 'pending'` by the database default.
 
 #### Response `400 Bad Request`
-Any of: missing `client_info`/`delivery_type`/`payment_method`/`items`; missing client name/last_name/tlf_num; invalid phone number; `delivery_type` not one of the allowed slugs (`"delivery_type must be one of: envio_nacional, delivery, retiro_tienda."`); empty `items` or `items` not an array; `product_qty <= 0`; insufficient stock.
+Any of: missing `client_info`/`delivery_type`/`payment_method`/`items`; missing client name/last_name/tlf_num; invalid phone number; `delivery_type` not one of the allowed slugs (`"delivery_type must be one of: envio_nacional, delivery, retiro_tienda."`); empty/malformed `items` (`"Each item needs a valid product_id and a positive whole product_qty."` — checked before any stock locking); insufficient stock.
 ```json
 {
   "success": false,
@@ -571,7 +608,7 @@ Returns every order placed by a specific client (same shape as the dashboard lis
 }
 ```
 
-> **Note:** a `client_id` that exists but has no orders returns the same empty-state shape as §2.2 (`"No orders have been placed by this client."`). A nonexistent `client_id` currently also returns `200` with that message rather than `404` — see ROADMAP.md.
+> **Note:** a `client_id` that exists but has no orders returns the empty-state message with 200. A nonexistent `client_id` returns **404** (`"Client doesn't exist."`).
 
 ---
 

@@ -1,5 +1,5 @@
 import { describe, expect, test, afterAll } from '@jest/globals';
-import { applyProductImage } from '../src/controllers/c_products.js';
+import { applyProductImage, clearProductImage } from '../src/controllers/c_products.js';
 import { endPool } from '../src/config/db.js';
 
 afterAll(async () => {
@@ -126,5 +126,93 @@ describe('applyProductImage', () => {
 
         expect(result).toEqual({ status: 400, message: 'Invalid image payload.' });
         expect(calls).toEqual(['load', 'save-failed']);
+    });
+});
+
+describe('clearProductImage', () => {
+    const productId = 9;
+
+    const makeClearDeps = ({ product = { exists: true, is_archived: false, current_image_key: 'products/old-key.webp' }, persistResult = true } = {}) => {
+        const calls = [];
+        return {
+            calls,
+            deps: {
+                loadProductState: async () => {
+                    calls.push('load');
+                    return product;
+                },
+                persistKey: async (_productId) => {
+                    calls.push('persist:null');
+                    return persistResult;
+                },
+                removeFile: async (key) => {
+                    calls.push(`remove:${key}`);
+                    return true;
+                }
+            }
+        };
+    };
+
+    test('nulls the column then removes the stored file', async () => {
+        const { deps, calls } = makeClearDeps();
+
+        const result = await clearProductImage(deps, productId);
+
+        expect(result).toEqual({ ok: true });
+        expect(calls).toEqual(['load', 'persist:null', 'remove:products/old-key.webp']);
+    });
+
+    test('is a no-op success when the product has no image', async () => {
+        const { deps, calls } = makeClearDeps({
+            product: { exists: true, is_archived: false, current_image_key: null }
+        });
+
+        const result = await clearProductImage(deps, productId);
+
+        expect(result).toEqual({ ok: true });
+        expect(calls).toEqual(['load', 'persist:null']);
+    });
+
+    test('returns 404 "not found" without touching db writes or storage', async () => {
+        const { deps, calls } = makeClearDeps({ product: { exists: false } });
+
+        const result = await clearProductImage(deps, productId);
+
+        expect(result).toEqual({ status: 404, message: 'Product was not found.' });
+        expect(calls).toEqual(['load']);
+    });
+
+    test('returns 404 "archived" without touching db writes or storage', async () => {
+        const { deps, calls } = makeClearDeps({
+            product: { exists: true, is_archived: true, current_image_key: 'products/old-key.webp' }
+        });
+
+        const result = await clearProductImage(deps, productId);
+
+        expect(result).toEqual({ status: 404, message: 'Product is archived.' });
+        expect(calls).toEqual(['load']);
+    });
+
+    test('forwards persist errors and never removes the file when the column update fails', async () => {
+        const { deps, calls } = makeClearDeps();
+        deps.persistKey = async (_id) => {
+            calls.push('persist:null');
+            throw new Error('db exploded');
+        };
+
+        const result = await clearProductImage(deps, productId);
+
+        expect(result.error).toBeInstanceOf(Error);
+        expect(result.error.message).toBe('db exploded');
+        expect(calls).toEqual(['load', 'persist:null']);
+    });
+
+    test('returns 404 archived and keeps the file when the product disappears mid-flight', async () => {
+        const { deps, calls } = makeClearDeps({ persistResult: false });
+
+        const result = await clearProductImage(deps, productId);
+
+        expect(result).toEqual({ status: 404, message: 'Product is archived.' });
+        expect(calls).toEqual(['load', 'persist:null']);
     });
 });

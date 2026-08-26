@@ -26,6 +26,7 @@ This document summarizes all architectural decisions, database schemas, complete
   - Built-in multi-factor auth, session rotation, and security rate-limiting.
   - Pre-built React components (`<SignIn />`, `<UserButton />`) for frontend UI.
 * **How it's wired (v2 pattern — no `requireAuth()`):**
+  - Requires both `CLERK_SECRET_KEY` and `CLERK_PUBLISHABLE_KEY` in env — the SDK needs the publishable key server-side to build auth context (it's public info; same value the frontend holds).
   - `clerkMiddleware()` runs globally in `src/app.js`; CORS is restricted to `FRONTEND_ORIGINS` (default `http://localhost:5173`).
   - Protected routes chain the custom `requireAdmin` middleware (`src/middleware/auth.js`): missing session → JSON `401`; then it loads the Clerk user via Backend API and requires `publicMetadata.role ∈ {'owner','tech'}` → else `403`; on success stashes `req.adminUser`.
   - Role mapping to DB: `owner`→`shop_owner`, `tech`→`tech_admin`. Cancel/approve lazily upsert the acting admin into `tokki_shop.users` and write their id into `orders.processed_by`.
@@ -95,6 +96,7 @@ Preserves historical item names and prices at time of purchase.
 
 **Product images:** every product response carries `product_image_url`, composed at response time by `attachImageUrls`/`toPublicImageUrl` — raw keys never leave the API.
 * **`POST /api/products/:product_id/image`** *(admin)*: multipart upload gated by `uploadImage` (memory storage, 5 MB cap, declared-mime allowlist + magic-byte sniff), normalized to WebP (≤1600px, q82) by `saveProductImage`, key persisted transactionally with an `is_archived = false` guard; replaced files are deleted only after commit, failed updates clean up the new file (`applyProductImage` orchestrates the save → persist → cleanup sequence).
+* **`DELETE /api/products/:product_id/image`** *(admin)*: nulls the key transactionally (`clearProductImage`), deletes the file after commit; idempotent no-op when no image is set.
 * Archiving a product deletes its stored file post-commit (`cleanupProductImages`, best-effort).
 * Stored images are served statically at `/images/<key>` with 7-day immutable caching.
 
@@ -114,7 +116,7 @@ Preserves historical item names and prices at time of purchase.
     "cedula": "V-12345678"
   },
   "delivery_type": "envio_nacional",
-  "payment_method": "credit_card",
+  "payment_method": "pago_movil",
   "items": [
     { "product_id": 1, "product_qty": 2 },
     { "product_id": 2, "product_qty": 1 }
@@ -131,8 +133,8 @@ Preserves historical item names and prices at time of purchase.
 1. Presence of `client_info`, `delivery_type`, `payment_method`, `items`.
 2. Client name/last_name/tlf_num present; optional `cedula` normalized & validated (`"Invalid cedula format."` on bad input).
 3. Phone number is valid international format.
-4. `delivery_type` / `payment_method` truthy; `items` is a non-empty array; `delivery_type` ∈ allowed slugs (`envio_nacional`, `delivery`, `retiro_tienda` — also enforced by a DB CHECK constraint).
-5. Per item: product exists (404), `product_qty > 0` (400), stock sufficient (400).
+4. `delivery_type` / `payment_method` truthy; `items` is a non-empty array; `delivery_type` ∈ allowed slugs (`envio_nacional`, `delivery`, `retiro_tienda` — also enforced by a DB CHECK constraint); every item's `product_id`/`product_qty` is a positive integer (`validateOrderItems`) — all **before** any transaction or row locking.
+5. Per item: product exists (404), stock sufficient (400).
 
 **Transaction Sequence (single `BEGIN` -> `COMMIT` / `ROLLBACK`):**
 1. **Find/Create Client (Upsert):**
@@ -158,7 +160,7 @@ Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amo
 Returns the order header + client info (including `status`), plus each line item (snapshot `product_name`, `product_qty`, `product_price`, and computed `product_total = qty * price`). Controller folds the flat join rows into `{ header, client, items[] }`. 404 if the order doesn't exist.
 
 ### `GET /api/orders/client/:client_id` — Client Order History
-Same shape as the dashboard list, filtered by `client_id`, newest-first. Empty result returns `"No orders have been placed by this client."` (also returned for unknown `client_id`s — see ROADMAP.md).
+Same shape as the dashboard list, filtered by `client_id`, newest-first. Empty result returns `"No orders have been placed by this client."`; a nonexistent `client_id` returns 404 (`"Client doesn't exist."`).
 
 ### `PATCH /api/orders/:order_id/cancel` — Cancel Order
 The `orders` table carries a lifecycle `status`; records are never hard-deleted.
@@ -190,4 +192,4 @@ Transitions `'pending'` -> `'approved'` when the shop owner confirms an order. N
 All originally planned endpoints are now implemented. The forward-looking backlog lives in [`ROADMAP.md`](ROADMAP.md); agent-oriented project context lives in [`CONTEXT.md`](CONTEXT.md). Highlights of known gaps:
 
 * **Auth wired:** `clerkMiddleware()` + `requireAdmin` protect product mutations and all order endpoints except checkout (see §2). Remaining: webhook-based user sync, token-attachment on frontend admin calls.
-* **Test coverage:** 73 unit tests across five suites — phone + cedula validation (`tests/validate.test.js`), image storage (`storage.test.js`), upload middleware (`upload.test.js`), image-upload orchestration (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).
+* **Test coverage:** 93 unit tests across six suites — phone + cedula validation (`tests/validate.test.js`), field-type validation (`tests/product-validation.test.js`), image storage (`storage.test.js`), upload middleware (`upload.test.js`), image-upload + image-removal orchestration (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).
