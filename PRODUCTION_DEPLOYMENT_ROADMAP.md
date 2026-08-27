@@ -163,41 +163,84 @@ FRONTEND_ORIGINS=https://www.tokkishopve.com,https://tokkishopve.com
 
 ---
 
-### Phase 3: PostgreSQL 16 Setup & Database Provisioning
+### Phase 3: PostgreSQL 16 Setup & Database Security Hardening
 
-1. **Install PostgreSQL:**
-   ```bash
-   sudo apt install -y postgresql postgresql-contrib
-   sudo systemctl enable postgresql
-   sudo systemctl start postgresql
-   ```
+> **How PostgreSQL Differs from MariaDB/MySQL:**  
+> Unlike MySQL/MariaDB (which historically required `mysql_secure_installation` to set a root password and remove test DBs), PostgreSQL is secure by default:
+> 1. The default superuser `postgres` uses **`peer` authentication** on local Unix sockets (only the Linux `postgres` user via `sudo -u postgres` can log in).
+> 2. It has **no default password** and rejects password logins over TCP for `postgres`.
+> 3. By default, it only listens on `localhost` (127.0.0.1), preventing external network access.
 
-2. **Create a secure production user and database:**
-   ```bash
-   sudo -u postgres psql
-   ```
+#### 1. Install PostgreSQL:
+```bash
+sudo apt install -y postgresql postgresql-contrib
+sudo systemctl enable postgresql
+sudo systemctl start postgresql
+```
 
-   Run the following SQL commands:
-   ```sql
-   -- Create dedicated database role with strong password
-   CREATE USER tokki_app WITH ENCRYPTED PASSWORD 'GENERATE_STRONG_RANDOM_PASSWORD';
+#### 2. Configure SCRAM-SHA-256 Password Encryption (`/etc/postgresql/16/main/postgresql.conf`):
+Ensure passwords are stored with modern cryptographic hashing (not legacy md5):
+```bash
+sudo sed -i "s/#password_encryption = scram-sha-256/password_encryption = scram-sha-256/" /etc/postgresql/16/main/postgresql.conf
+sudo systemctl reload postgresql
+```
 
-   -- Create production database owned by the application user
-   CREATE DATABASE tokki_prod OWNER tokki_app;
+#### 3. Create a Dedicated Least-Privilege Application Role & Database:
+```bash
+sudo -u postgres psql
+```
 
-   -- Grant permissions
-   GRANT ALL PRIVILEGES ON DATABASE tokki_prod TO tokki_app;
+Execute the following SQL commands:
+```sql
+-- Create application user with strict limits (no superuser, no db creation, no role creation)
+CREATE ROLE tokki_app WITH
+    LOGIN
+    ENCRYPTED PASSWORD 'GENERATE_STRONG_RANDOM_PASSWORD'
+    NOSUPERUSER
+    NOCREATEDB
+    NOCREATEROLE
+    NOINHERIT;
 
-   -- Connect to the target database and grant schema creation permissions
-   \c tokki_prod
-   GRANT ALL ON SCHEMA public TO tokki_app;
-   \q
-   ```
+-- Create production database owned by the application user
+CREATE DATABASE tokki_prod OWNER tokki_app;
 
-3. **Initialize the authoritative database schema:**
-   ```bash
-   psql "postgresql://tokki_app:GENERATE_STRONG_RANDOM_PASSWORD@127.0.0.1:5432/tokki_prod" -f src/schema/tokki_schema.sql
-   ```
+-- Connect to production database and restrict schema permissions
+\c tokki_prod
+
+-- Revoke default public permissions so other users/roles cannot access
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT ALL ON SCHEMA public TO tokki_app;
+
+\q
+```
+
+#### 4. Lock Down Host-Based Authentication (`/etc/postgresql/16/main/pg_hba.conf`):
+Ensure all password connections require `scram-sha-256` and no unauthenticated (`trust`) access exists.
+
+Edit `/etc/postgresql/16/main/pg_hba.conf` so the connection rules look like:
+```ini
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# 1. 'postgres' superuser: local Linux socket only (peer authentication via sudo)
+local   all             postgres                                peer
+
+# 2. 'tokki_app' user: local socket & localhost IPv4/IPv6 with SCRAM password
+local   tokki_prod      tokki_app                               scram-sha-256
+host    tokki_prod      tokki_app       127.0.0.1/32            scram-sha-256
+host    tokki_prod      tokki_app       ::1/128                 scram-sha-256
+
+# 3. Reject all other connections by default
+```
+
+Apply the security changes:
+```bash
+sudo systemctl restart postgresql
+```
+
+#### 5. Initialize the Authoritative Database Schema:
+```bash
+psql "postgresql://tokki_app:GENERATE_STRONG_RANDOM_PASSWORD@127.0.0.1:5432/tokki_prod" -f src/schema/tokki_schema.sql
+```
 
 ---
 
