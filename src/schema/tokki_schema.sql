@@ -106,6 +106,16 @@ CREATE INDEX IF NOT EXISTS idx_clients_p_number_tlf_num ON tokki_shop.clients_p_
 ALTER TABLE tokki_shop.orders ADD COLUMN IF NOT EXISTS contact_phone character varying(20);
 ALTER TABLE tokki_shop.orders ADD COLUMN IF NOT EXISTS order_token uuid DEFAULT gen_random_uuid();
 
+-- Normalize legacy delivery_type values in orders before updating rows or applying constraints
+UPDATE tokki_shop.orders
+SET delivery_type = CASE
+    WHEN lower(trim(delivery_type)) IN ('delivery', '') OR delivery_type IS NULL THEN 'delivery'
+    WHEN lower(trim(delivery_type)) IN ('envio nacional', 'envio_nacional', 'envío nacional') THEN 'envio_nacional'
+    WHEN lower(trim(delivery_type)) IN ('retiro en tienda', 'retiro_tienda', 'pickup') THEN 'retiro_tienda'
+    ELSE 'delivery'
+END
+WHERE delivery_type NOT IN ('envio_nacional', 'delivery', 'retiro_tienda') OR delivery_type IS NULL;
+
 DO $$
 BEGIN
     UPDATE tokki_shop.orders SET order_token = gen_random_uuid() WHERE order_token IS NULL;
