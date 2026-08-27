@@ -39,6 +39,7 @@ PostgreSQL, Express.js and Node.JS backend for the Tokki online store.
 - [`API_CONTRACT.md`](API_CONTRACT.md) — request/response contracts for every endpoint
 - [`PROJECT_SUMMARY_AND_PLAN.md`](PROJECT_SUMMARY_AND_PLAN.md) — architecture decisions, DB schema, implemented behavior
 - [`ROADMAP.md`](ROADMAP.md) — prioritized backlog of known gaps and next features
+- [`PRODUCTION_DEPLOYMENT_ROADMAP.md`](PRODUCTION_DEPLOYMENT_ROADMAP.md) — step-by-step production setup, Nginx/PM2, and security hardening
 - [`CONTEXT.md`](CONTEXT.md) — project context & conventions for agents/contributors
 
 ## Getting started

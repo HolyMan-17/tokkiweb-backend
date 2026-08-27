@@ -4,7 +4,7 @@ Read this before changing code. It captures the non-obvious decisions and patter
 
 **Repo boundaries:** You may only check or add context from another repo (e.g. `tokkiweb-frontend`) if the user asks you to; otherwise focus exclusively on the present directory.
 
-**Related docs:** [`README.md`](README.md) (setup) · [`API_CONTRACT.md`](API_CONTRACT.md) (endpoint contracts) · [`PROJECT_SUMMARY_AND_PLAN.md`](PROJECT_SUMMARY_AND_PLAN.md) (architecture & schema) · [`ROADMAP.md`](ROADMAP.md) (backlog)
+**Related docs:** [`README.md`](README.md) (setup) · [`API_CONTRACT.md`](API_CONTRACT.md) (endpoint contracts) · [`PROJECT_SUMMARY_AND_PLAN.md`](PROJECT_SUMMARY_AND_PLAN.md) (architecture & schema) · [`ROADMAP.md`](ROADMAP.md) (backlog) · [`PRODUCTION_DEPLOYMENT_ROADMAP.md`](PRODUCTION_DEPLOYMENT_ROADMAP.md) (production setup & security)
 
 ---
 
