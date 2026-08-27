@@ -6,16 +6,27 @@ BEGIN;
 -- 2. CLIENTS (Store buyer contact details for guest checkout)
 CREATE TABLE IF NOT EXISTS tokki_shop.clients
 (
-    client_id serial NOT NULL,
+    client_id serial NOT NULL PRIMARY KEY,
     name character varying(100) NOT NULL,
     last_name character varying(100) NOT NULL,
-    tlf_num character varying(20) UNIQUE NOT NULL,
-    cedula character varying(12),
-    PRIMARY KEY (client_id),
-    CONSTRAINT clients_cedula_unique UNIQUE (cedula)
+    cedula character varying(12) UNIQUE NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- 3. USERS (Maps Clerk User Accounts to internal system roles)
+-- 3. CLIENTS PHONE NUMBERS (Store normalized phone numbers per client)
+CREATE TABLE IF NOT EXISTS tokki_shop.clients_p_number
+(
+    phone_id serial NOT NULL PRIMARY KEY,
+    client_id integer NOT NULL REFERENCES tokki_shop.clients(client_id) ON DELETE CASCADE,
+    tlf_num character varying(20) NOT NULL,
+    is_primary boolean NOT NULL DEFAULT TRUE,
+    last_used_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT clients_p_number_client_phone_unique UNIQUE (client_id, tlf_num)
+);
+
+-- 4. USERS (Maps Clerk User Accounts to internal system roles)
 CREATE TABLE IF NOT EXISTS tokki_shop.users
 (
     clerk_user_id character varying(255) NOT NULL,
@@ -25,11 +36,13 @@ CREATE TABLE IF NOT EXISTS tokki_shop.users
     PRIMARY KEY (clerk_user_id)
 );
 
--- 4. ORDERS (Tracks store orders and optional processing admin)
+-- 5. ORDERS (Tracks store orders and optional processing admin)
 CREATE TABLE IF NOT EXISTS tokki_shop.orders
 (
     order_id serial NOT NULL,
+    order_token uuid NOT NULL DEFAULT gen_random_uuid() CONSTRAINT orders_order_token_unique UNIQUE,
     client_id integer NOT NULL,
+    contact_phone character varying(20) NOT NULL,
     delivery_type character varying NOT NULL CONSTRAINT orders_delivery_type_check CHECK (delivery_type IN ('envio_nacional', 'delivery', 'retiro_tienda')),
     total_amount numeric(9, 2) NOT NULL,
     payment_method character varying NOT NULL,
@@ -41,7 +54,7 @@ CREATE TABLE IF NOT EXISTS tokki_shop.orders
     FOREIGN KEY (processed_by) REFERENCES tokki_shop.users(clerk_user_id) ON DELETE SET NULL
 );
 
--- 5. PRODUCTS (Inventory catalog)
+-- 6. PRODUCTS (Inventory catalog)
 CREATE TABLE IF NOT EXISTS tokki_shop.products
 (
     product_id serial NOT NULL,
@@ -56,7 +69,7 @@ CREATE TABLE IF NOT EXISTS tokki_shop.products
     PRIMARY KEY (product_id)
 );
 
--- 6. ORDER ITEMS (Historic line items for each order)
+-- 7. ORDER ITEMS (Historic line items for each order)
 CREATE TABLE IF NOT EXISTS tokki_shop.order_items (
     order_item_id SERIAL PRIMARY KEY,
     order_id INTEGER REFERENCES tokki_shop.orders(order_id) ON DELETE CASCADE,
@@ -68,11 +81,62 @@ CREATE TABLE IF NOT EXISTS tokki_shop.order_items (
 
 COMMIT;
 
--- 7. Migrations for pre-existing databases (idempotent)
+-- 8. Migrations for pre-existing databases (idempotent)
 ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS category character varying(100) NOT NULL DEFAULT 'Otros';
 ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS product_image text;
 
 ALTER TABLE tokki_shop.clients ADD COLUMN IF NOT EXISTS cedula character varying(12);
+ALTER TABLE tokki_shop.clients ADD COLUMN IF NOT EXISTS created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE tokki_shop.clients ADD COLUMN IF NOT EXISTS updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+CREATE TABLE IF NOT EXISTS tokki_shop.clients_p_number
+(
+    phone_id serial NOT NULL PRIMARY KEY,
+    client_id integer NOT NULL REFERENCES tokki_shop.clients(client_id) ON DELETE CASCADE,
+    tlf_num character varying(20) NOT NULL,
+    is_primary boolean NOT NULL DEFAULT TRUE,
+    last_used_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT clients_p_number_client_phone_unique UNIQUE (client_id, tlf_num)
+);
+
+CREATE INDEX IF NOT EXISTS idx_clients_p_number_client_id ON tokki_shop.clients_p_number(client_id);
+CREATE INDEX IF NOT EXISTS idx_clients_p_number_tlf_num ON tokki_shop.clients_p_number(tlf_num);
+
+ALTER TABLE tokki_shop.orders ADD COLUMN IF NOT EXISTS contact_phone character varying(20);
+ALTER TABLE tokki_shop.orders ADD COLUMN IF NOT EXISTS order_token uuid DEFAULT gen_random_uuid();
+
+DO $$
+BEGIN
+    UPDATE tokki_shop.orders SET order_token = gen_random_uuid() WHERE order_token IS NULL;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_order_token_unique') THEN
+        ALTER TABLE tokki_shop.orders ADD CONSTRAINT orders_order_token_unique UNIQUE (order_token);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_orders_order_token ON tokki_shop.orders(order_token);
+
+-- Backfill orders.contact_phone and clients_p_number from clients.tlf_num if clients.tlf_num exists
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'tokki_shop' AND table_name = 'clients' AND column_name = 'tlf_num'
+    ) THEN
+        UPDATE tokki_shop.orders o
+        SET contact_phone = c.tlf_num
+        FROM tokki_shop.clients c
+        WHERE o.client_id = c.client_id AND o.contact_phone IS NULL;
+
+        INSERT INTO tokki_shop.clients_p_number (client_id, tlf_num, is_primary, last_used_at, created_at)
+        SELECT client_id, tlf_num, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM tokki_shop.clients
+        WHERE tlf_num IS NOT NULL
+        ON CONFLICT (client_id, tlf_num) DO NOTHING;
+
+        ALTER TABLE tokki_shop.clients DROP COLUMN IF EXISTS tlf_num CASCADE;
+    END IF;
+END $$;
 
 DO $$
 BEGIN

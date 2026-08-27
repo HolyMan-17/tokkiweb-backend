@@ -25,14 +25,17 @@ PostgreSQL, Express.js and Node.JS backend for the Tokki online store.
 | `DELETE /api/products/:product_id` | Soft-delete (archive) product |
 | `POST /api/products/:product_id/image` | Upload/replace product image (multipart, WebP-normalized) |
 | `POST /api/orders` | Checkout: find/create client, lock & deduct stock, create order |
-| `GET /api/orders` | Dashboard list of all orders |
-| `GET /api/orders/client/:client_id` | One client's order history |
-| `GET /api/orders/:order_id` | Full order details (header + client + line items) |
-| `PATCH /api/orders/:order_id/cancel` | Cancel a pending order, restore stock |
-| `PATCH /api/orders/:order_id/approve` | Approve a pending order |
+| `GET /api/orders/receipt/:order_token` | Public order receipt by unguessable UUID token |
+| `GET /api/orders` | Dashboard list of all orders (admin) |
+| `GET /api/orders/client/:client_id` | One client's order history (admin) |
+| `GET /api/orders/:order_id` | Full order details (header + client + line items) (admin) |
+| `PATCH /api/orders/:order_id/cancel` | Cancel a pending order, restore stock (admin) |
+| `PATCH /api/orders/:order_id/approve` | Approve a pending order (admin) |
 
-**Public:** catalog reads (`GET /api/products*`) + guest checkout (`POST /api/orders`).
-**Admin-only:** product create/update/archive, image upload, order views, cancel/approve — requires a Clerk session with `publicMetadata.role` of `owner` or `tech`.## Docs
+**Public:** catalog reads (`GET /api/products*`), guest checkout (`POST /api/orders`), secure order receipt (`GET /api/orders/receipt/:order_token`).
+**Admin-only:** product mutations (create/update/archive/images), orders dashboard (`GET /api/orders`), order full details (`GET /api/orders/:order_id`), client history, cancel/approve — requires a Clerk session with `publicMetadata.role` of `owner` or `tech`.
+
+## Docs
 - [`API_CONTRACT.md`](API_CONTRACT.md) — request/response contracts for every endpoint
 - [`PROJECT_SUMMARY_AND_PLAN.md`](PROJECT_SUMMARY_AND_PLAN.md) — architecture decisions, DB schema, implemented behavior
 - [`ROADMAP.md`](ROADMAP.md) — prioritized backlog of known gaps and next features

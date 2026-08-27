@@ -36,15 +36,15 @@ Done via `parseIdParam` (`src/utils/params.js`, unit-tested): every `:product_id
 ### [ ] 7. Constrain remaining enums at the DB level
 ~~`delivery_type`~~ done (controller allowlist + `orders_delivery_type_check`). `payment_method` is still free-form — add a CHECK constraint (or lookup table) once business confirms values (`pago_movil`, `bank_transfer`, `cash`, `zelle` per the frontend's `PAYMENT_METHODS`).
 
-### [ ] 8. Transaction hygiene in `createOrder`
-The find-or-create-client step commits its own mini-transaction before the main one starts (two transactions per request). Fold it into the single main transaction for atomicity. Also deduplicate the double `BEGIN` risk if code paths evolve.
+### [x] 8. Transaction hygiene in `createOrder`
+Done: Folded client lookup/creation and phone registration into the single consolidated transaction alongside product stock locking and order/items insertion for complete atomicity and eliminating double-`BEGIN` overhead.
 
 ---
 
 ## P2 — Testing
 
 ### [ ] 9. Controller/integration tests
-93 unit tests across 6 suites exist (validation ×2, storage, upload, product-image orchestration, image-cleanup) — but they exercise utils/middleware/pure orchestrators only. No test spins up routes against a real DB.
+116 unit tests across 10 suites exist (validation ×2, storage, upload, product-image orchestration, image-cleanup, params, client-sync, orders validation, order-receipt) — but they exercise utils/middleware/pure orchestrators only. No test spins up HTTP routes against a real DB.
 - Spin up a test database (separate `DATABASE_URL`), apply `tokki_schema.sql`, seed fixtures.
 - Cover: products CRUD incl. archived behavior; order creation happy path; oversell rejection under stock contention; cancel restores stock exactly once; approve/cancel guards; 404s.
 - Note: `jest.config.js` uses `node --experimental-vm-modules`; keep ESM-compatible patterns.
@@ -67,8 +67,8 @@ Archived products are invisible to every endpoint. Add `GET /api/products?archiv
 - Order notes, delivery address fields.
 - WhatsApp deep-link helper for owner follow-up (phone numbers are already stored E.164 for this purpose).
 
-### [ ] 14. Client identification improvements
-Guest checkout keys clients on phone only; a repeat buyer who typos their name creates mismatched records. Consider letting authenticated users claim client records, or upsert name on reuse.
+### [x] 14. Client identification improvements
+Done: Implemented cédula-centric client model (`clients.cedula` UNIQUE NOT NULL) as the primary customer identifier across the store. Multiple contact numbers per client are normalized and tracked in `clients_p_number` with composite unique constraint `(client_id, tlf_num)` and `last_used_at` timestamps, while each order preserves a direct snapshot in `orders.contact_phone`.
 
 ### [x] 15. Ops niceties
 - ~~`.env.example`~~ done (includes `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `UPLOAD_DIR`, `PUBLIC_BASE_URL`).

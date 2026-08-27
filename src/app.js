@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import { clerkMiddleware } from '@clerk/express';
-import * as db from './config/db.js';
 import { resolveUploadDir } from './utils/storage.js';
 import apiRouter from './routes/index.js';
 

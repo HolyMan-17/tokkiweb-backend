@@ -5,7 +5,7 @@
 **Version:** 0.9.1 *(pre-deploy — see versioning policy below)*  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
-**Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders`. Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
+**Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders` (guest checkout) + `GET /api/orders/receipt/:order_token` (secure order confirmation receipt). Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
 
 ```json
 { "success": false, "message": "Authentication required." }
@@ -238,7 +238,7 @@ Product exists but is archived (same status, distinct message):
 Archives a product by setting `is_archived = true`, `qty_available = 0`, and `in_stock = false`.
 
 * **Method:** `DELETE`
-* **Path:** `/api/products/:product_id`
+* **Path:** `/api/products/:product_id` *(admin — see [Auth](#-general-response-format))*
 * **URL Params:** `product_id` (integer, required)
 * **Request Body:** None
 
@@ -333,7 +333,7 @@ Same as §1.6 — `"Product was not found."` or `"Product is archived."`.
 
 ### 2.1 Create Order (Checkout)
 
-Processes a full checkout: finds/creates the client, validates & deducts product stock, inserts the order header and line items inside a **single transaction** (`BEGIN` -> `COMMIT` / `ROLLBACK`).
+Processes a full checkout: finds/creates the client keyed on cédula, registers/updates the phone number in `clients_p_number`, validates & deducts product stock, snapshots the contact phone into the order header, and inserts line items inside a **single consolidated transaction** (`BEGIN` -> `COMMIT` / `ROLLBACK`).
 
 * **Method:** `POST`
 * **Path:** `/api/orders`
@@ -360,14 +360,21 @@ Processes a full checkout: finds/creates the client, validates & deducts product
 
 **Delivery types (enforced):** `delivery_type` must be exactly one of the allowed slugs — `envio_nacional`, `delivery`, `retiro_tienda` — validated by the controller and by a DB CHECK constraint. Display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") live in the frontend's `DELIVERY_TYPES` constant; the API only ever stores/returns slugs.
 
-**Cedula rules:** `client_info.cedula` is optional (Venezuelan ID). Lenient input (`'v12345678'`, missing hyphen, stray spaces) is normalized to the canonical combined form `"V-12345678"` before storing; absent/null/empty stores `NULL` (legacy rows keep `NULL` too). Invalid values → `400` `"Invalid cedula format."`; a cedula already owned by another client → `409` `"Resource already exists."`. Stored on the `clients` row when the client is created (UNIQUE constraint); existing clients are never backfilled.
+**Cedula rules (required):** `client_info.cedula` is **REQUIRED** (Venezuelan ID). Lenient input (`'v12345678'`, `'V 12345678'`, missing hyphen, stray spaces) is normalized to the canonical combined form `"V-12345678"`.
+* Clients are keyed primarily on `cedula` (`clients.cedula` is `UNIQUE NOT NULL`).
+* Missing or empty `cedula` → `400` `"All client info fields are required."`
+* Malformed or invalid format → `400` `"Invalid cedula format."`
+* When an order is placed, the backend checks for an existing client by `cedula`. If found, that client record is reused; otherwise a new client row is created.
 
-**Payment methods:** `payment_method` currently accepts any non-empty string server-side (no DB constraint yet — see ROADMAP #7), but the frontend only ever sends the slugs from its `PAYMENT_METHODS` constant: `pago_movil`, `binance`, `zelle`, `paypal`, `cash`. Use those in integrations.
-
-**Phone format (flexible, international):**
+**Phone numbers & `clients_p_number`:**
+* `client_info.tlf_num` is required and normalized to E.164 format (`+584146996703`).
+* Multiple phone numbers can be associated with a single client cédula over time. Every phone used during checkout is upserted into the `tokki_shop.clients_p_number` table (updating `last_used_at` on reuse).
+* The specific phone number provided for this checkout is snapshotted directly into `orders.contact_phone` to ensure order-level contact history remains immutable.
 * Local form: `country_code` (`+58`) + `tlf_num` (`041469996703`) -> normalized & stored as E.164 (`+584146996703`).
 * International form: `tlf_num` provided as a full E.164 number (`+584146996703`), in which case `country_code` may be omitted.
 * Rejects: empty/whitespace, embedded formatting chars, wrong length, malformed or missing `country_code` when `tlf_num` is not international, invalid E.164 (8-15 digits after `+`, first digit 1-9).
+
+**Payment methods:** `payment_method` currently accepts any non-empty string server-side (no DB constraint yet — see ROADMAP #7), but the frontend only ever sends the slugs from its `PAYMENT_METHODS` constant: `pago_movil`, `binance`, `zelle`, `paypal`, `cash`. Use those in integrations.
 
 #### Response `201 Created`
 ```json
@@ -375,9 +382,11 @@ Processes a full checkout: finds/creates the client, validates & deducts product
   "success": true,
   "data": {
     "order_id": 5,
+    "order_token": "550e8400-e29b-41d4-a716-446655440000",
     "delivery_type": "envio_nacional",
     "payment_method": "pago_movil",
     "total_amount": "99.98",
+    "contact_phone": "+584146996703",
     "items": [
       { "id": 1, "name": "Tokki Hoodie", "ordered_qty": 2, "price": "49.99" }
     ]
@@ -388,7 +397,7 @@ Processes a full checkout: finds/creates the client, validates & deducts product
 **Note:** every new order is created with `status: 'pending'` by the database default.
 
 #### Response `400 Bad Request`
-Any of: missing `client_info`/`delivery_type`/`payment_method`/`items`; missing client name/last_name/tlf_num; invalid phone number; `delivery_type` not one of the allowed slugs (`"delivery_type must be one of: envio_nacional, delivery, retiro_tienda."`); empty/malformed `items` (`"Each item needs a valid product_id and a positive whole product_qty."` — checked before any stock locking); insufficient stock.
+Any of: missing `client_info`/`delivery_type`/`payment_method`/`items` (`"All fields are required."`); missing client `name`/`last_name`/`tlf_num`/`cedula` (`"All client info fields are required."`); malformed cédula (`"Invalid cedula format."`); invalid phone number (`"Phone number must be a valid international format."`); `delivery_type` not one of the allowed slugs (`"delivery_type must be one of: envio_nacional, delivery, retiro_tienda."`); empty/malformed `items` (`"Each item needs a valid product_id and a positive whole product_qty."` — checked before any stock locking); insufficient stock.
 ```json
 {
   "success": false,
@@ -410,10 +419,10 @@ Any of: missing `client_info`/`delivery_type`/`payment_method`/`items`; missing 
 
 ### 2.2 List All Orders (Dashboard)
 
-Returns all orders with the buyer's info and a per-order distinct line-item count.
+Returns all orders with the buyer's info, contact phone snapshot, and a per-order distinct line-item count.
 
 * **Method:** `GET`
-* **Path:** `/api/orders`
+* **Path:** `/api/orders` *(admin — see [Auth](#-general-response-format))*
 * **Request Body:** None
 
 #### Response `200 OK`
@@ -427,6 +436,8 @@ Returns all orders with the buyer's info and a per-order distinct line-item coun
       "last_name": "Doe",
       "tlf_num": "+584146996703",
       "cedula": "V-12345678",
+      "delivery_type": "envio_nacional",
+      "payment_method": "pago_movil",
       "total_amount": "99.98",
       "status": "pending",
       "item_count": 2,
@@ -435,6 +446,8 @@ Returns all orders with the buyer's info and a per-order distinct line-item coun
   ]
 }
 ```
+
+> **Note on `tlf_num`:** `tlf_num` in the order list reflects the order's specific `contact_phone` snapshot (the phone provided at checkout for that specific order).
 
 #### Response `200 OK` (no orders yet)
 ```json
@@ -446,12 +459,12 @@ Returns all orders with the buyer's info and a per-order distinct line-item coun
 
 ---
 
-### 2.3 Get Single Order (Full Details)
+### 2.3 Get Single Order (Full Details — Admin)
 
-Returns the order header, client info, and the full list of line items (name, quantity, unit price, and computed line total).
+Returns the order header, client info with order contact phone snapshot, and the full list of line items (name, quantity, unit price, and computed line total).
 
 * **Method:** `GET`
-* **Path:** `/api/orders/:order_id`
+* **Path:** `/api/orders/:order_id` *(admin — see [Auth](#-general-response-format))*
 * **URL Params:** `order_id` (integer, required)
 * **Request Body:** None
 
@@ -461,7 +474,10 @@ Returns the order header, client info, and the full list of line items (name, qu
   "success": true,
   "data": {
     "order_id": 3,
+    "order_token": "550e8400-e29b-41d4-a716-446655440000",
     "status": "pending",
+    "delivery_type": "delivery",
+    "payment_method": "pago_movil",
     "client": {
       "name": "Jane",
       "last_name": "Doe",
@@ -482,6 +498,8 @@ Returns the order header, client info, and the full list of line items (name, qu
   "message": "Order retrieved."
 }
 ```
+
+> **Note on `client.tlf_num`:** `client.tlf_num` reflects the order's `contact_phone` snapshot captured at purchase time.
 
 #### Response `404 Not Found`
 ```json
@@ -599,6 +617,8 @@ Returns every order placed by a specific client (same shape as the dashboard lis
       "last_name": "Doe",
       "tlf_num": "+584146996703",
       "cedula": "V-12345678",
+      "delivery_type": "envio_nacional",
+      "payment_method": "pago_movil",
       "total_amount": "99.98",
       "status": "pending",
       "item_count": 2,
@@ -608,7 +628,68 @@ Returns every order placed by a specific client (same shape as the dashboard lis
 }
 ```
 
+> **Note on `tlf_num`:** `tlf_num` reflects the order's specific `contact_phone` snapshot.
+>
 > **Note:** a `client_id` that exists but has no orders returns the empty-state message with 200. A nonexistent `client_id` returns **404** (`"Client doesn't exist."`).
+
+---
+
+### 2.7 Get Order Confirmation Receipt (Public Guest Access)
+
+Returns the public order confirmation receipt for a given unguessable `order_token` (UUIDv4 generated at checkout). This allows guest customers to view and refresh their order confirmation screen without exposing sequential order IDs or requiring admin authentication.
+
+* **Method:** `GET`
+* **Path:** `/api/orders/receipt/:order_token` *(public)*
+* **URL Params:** `order_token` (UUID string, required)
+* **Headers:** `Accept: application/json`
+* **Request Body:** None
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "data": {
+    "order_id": 5,
+    "order_token": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "pending",
+    "delivery_type": "envio_nacional",
+    "payment_method": "pago_movil",
+    "client": {
+      "name": "Jane",
+      "last_name": "Doe",
+      "tlf_num": "+584146996703",
+      "cedula": "V-12345678"
+    },
+    "total_amount": "99.98",
+    "created_at": "2026-08-04T12:00:00.000Z",
+    "items": [
+      {
+        "product_name": "Tokki Hoodie",
+        "product_qty": 2,
+        "product_price": "49.99",
+        "product_total": "99.98"
+      }
+    ]
+  },
+  "message": "Order retrieved."
+}
+```
+
+#### Response `400 Bad Request`
+```json
+{
+  "success": false,
+  "message": "Invalid order token format."
+}
+```
+
+#### Response `404 Not Found`
+```json
+{
+  "success": false,
+  "message": "Order doesn't exist."
+}
+```
 
 ---
 

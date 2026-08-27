@@ -30,29 +30,40 @@ This document summarizes all architectural decisions, database schemas, complete
   - `clerkMiddleware()` runs globally in `src/app.js`; CORS is restricted to `FRONTEND_ORIGINS` (default `http://localhost:5173`).
   - Protected routes chain the custom `requireAdmin` middleware (`src/middleware/auth.js`): missing session → JSON `401`; then it loads the Clerk user via Backend API and requires `publicMetadata.role ∈ {'owner','tech'}` → else `403`; on success stashes `req.adminUser`.
   - Role mapping to DB: `owner`→`shop_owner`, `tech`→`tech_admin`. Cancel/approve lazily upsert the acting admin into `tokki_shop.users` and write their id into `orders.processed_by`.
-* **Public endpoints:** product GETs + `POST /api/orders` (guest checkout). Everything else needs an admin token.
+* **Public endpoints:** product GETs + `POST /api/orders` (guest checkout) + `GET /api/orders/receipt/:order_token` (secure order receipt). Everything else needs an admin token.
 * **Database Role:** The `tokki_shop.users` table maps `clerk_user_id` to internal roles.
 
 ---
 
 ## 🗄️ 3. PostgreSQL Database Schema (`tokki_shop` schema)
 
-### A. `clients` Table (Buyer Info / Guest Checkout)
-Stores contact details for customers placing orders. Identified uniquely by phone number.
+### A. `clients` Table (Buyer Identity / Guest Checkout)
+Stores buyer identity. Customers are uniquely identified across the store by their national ID (`cedula`).
 * `client_id` (SERIAL PRIMARY KEY)
 * `name` (VARCHAR(100) NOT NULL)
 * `last_name` (VARCHAR(100) NOT NULL)
-* `tlf_num` (VARCHAR(20) UNIQUE NOT NULL)
-* `cedula` (VARCHAR(12) UNIQUE, nullable) -- Venezuelan ID, canonical "V-12345678"; NULL allowed for legacy rows
+* `cedula` (VARCHAR(12) UNIQUE NOT NULL) -- Primary client identifier, canonical "V-12345678"
+* `created_at` (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+* `updated_at` (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
 
-### B. `users` Table (Clerk Admin Mapping)
+### B. `clients_p_number` Table (Normalized Client Phone Numbers)
+Stores and tracks multiple contact phone numbers associated with each client.
+* `phone_id` (SERIAL PRIMARY KEY)
+* `client_id` (INTEGER NOT NULL FK -> `clients.client_id` ON DELETE CASCADE)
+* `tlf_num` (VARCHAR(20) NOT NULL) -- Normalized E.164 format (+58...)
+* `is_primary` (BOOLEAN NOT NULL DEFAULT FALSE)
+* `last_used_at` (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+* `created_at` (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+* Composite unique constraint: `UNIQUE (client_id, tlf_num)`
+
+### C. `users` Table (Clerk Admin Mapping)
 Maps Clerk authenticated user IDs to internal administrative accounts.
 * `clerk_user_id` (VARCHAR(255) PRIMARY KEY)
 * `email` (VARCHAR(255) NOT NULL)
 * `user_type` (VARCHAR(50) NOT NULL DEFAULT 'shop_owner')
 * `created_at` (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
 
-### C. `products` Table (Inventory Catalog)
+### D. `products` Table (Inventory Catalog)
 * `product_id` (SERIAL PRIMARY KEY)
 * `product_name` (VARCHAR NOT NULL)
 * `product_price` (NUMERIC(9, 2) NOT NULL)
@@ -63,9 +74,11 @@ Maps Clerk authenticated user IDs to internal administrative accounts.
 * `in_stock` (BOOLEAN NOT NULL DEFAULT FALSE)
 * `is_archived` (BOOLEAN NOT NULL DEFAULT FALSE) -- Soft-delete flag
 
-### D. `orders` Table (Store Purchase Headers)
+### E. `orders` Table (Store Purchase Headers)
 * `order_id` (SERIAL PRIMARY KEY)
+* `order_token` (UUID NOT NULL DEFAULT `gen_random_uuid()` UNIQUE) -- Unguessable capability token for public guest receipt access
 * `client_id` (INTEGER NOT NULL FK -> `clients.client_id`)
+* `contact_phone` (VARCHAR(20) NOT NULL) -- Contact phone snapshot for this specific order
 * `delivery_type` (VARCHAR NOT NULL, CHECK IN `('envio_nacional', 'delivery', 'retiro_tienda')`) -- enforced slugs; labels live in the frontend
 * `total_amount` (NUMERIC(9, 2) NOT NULL)
 * `payment_method` (VARCHAR NOT NULL)
@@ -73,7 +86,7 @@ Maps Clerk authenticated user IDs to internal administrative accounts.
 * `status` (VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK IN `('approved', 'pending', 'canceled')`) -- Order lifecycle state
 * `created_at` (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
 
-### E. `order_items` Table (Order Line Items)
+### F. `order_items` Table (Order Line Items)
 Preserves historical item names and prices at time of purchase.
 * `order_item_id` (SERIAL PRIMARY KEY)
 * `order_id` (INTEGER FK -> `orders.order_id` ON DELETE CASCADE)
@@ -81,6 +94,7 @@ Preserves historical item names and prices at time of purchase.
 * `product_name` (VARCHAR(100) NOT NULL)
 * `product_qty` (INTEGER NOT NULL)
 * `product_price` (DECIMAL(9, 2) NOT NULL)
+
 
 ---
 
@@ -124,45 +138,48 @@ Preserves historical item names and prices at time of purchase.
 }
 ```
 
-**Phone validation:** `normalizeAndValidatePhone(country_code, tlf_num)` in `src/utils/validate.js`.
-- Local form (`041469996703` + `country_code`) or full international (`+584146996703`) are both accepted.
-- Output is always normalized & stored as **E.164** (`+584146996703`) — compatible with WhatsApp for the shop owner's follow-up flow.
-- Rejects empty, malformed, or non-international numbers with `400`.
+**Cedula identification & phone validation:**
+- `client_info.cedula` is **REQUIRED** (Venezuelan ID). Lenient input is normalized via `normalizeAndValidateCedula(cedula)` to canonical combined form `"V-12345678"`.
+- `client_info.tlf_num` is validated and normalized via `normalizeAndValidatePhone(country_code, tlf_num)` to **E.164** (`+584146996703`).
+- Output phone format is WhatsApp-compatible for shop owner order follow-ups.
 
 **Validation performed (in order):**
 1. Presence of `client_info`, `delivery_type`, `payment_method`, `items`.
-2. Client name/last_name/tlf_num present; optional `cedula` normalized & validated (`"Invalid cedula format."` on bad input).
-3. Phone number is valid international format.
+2. Client `name`, `last_name`, `tlf_num`, and `cedula` present; `cedula` normalized & validated (`"Invalid cedula format."` on bad input).
+3. Phone number is valid international format (`"Phone number must be a valid international format."`).
 4. `delivery_type` / `payment_method` truthy; `items` is a non-empty array; `delivery_type` ∈ allowed slugs (`envio_nacional`, `delivery`, `retiro_tienda` — also enforced by a DB CHECK constraint); every item's `product_id`/`product_qty` is a positive integer (`validateOrderItems`) — all **before** any transaction or row locking.
 5. Per item: product exists (404), stock sufficient (400).
 
-**Transaction Sequence (single `BEGIN` -> `COMMIT` / `ROLLBACK`):**
-1. **Find/Create Client (Upsert):**
-   - Query `tokki_shop.clients` WHERE `tlf_num = <normalized phone>`.
-   - If found: use existing `client_id`.
-   - If not found: `INSERT INTO tokki_shop.clients` in a separate transaction and use generated `client_id`.
-2. **Validate Products & Deduct Stock:**
+**Transaction Sequence (single consolidated `BEGIN` -> `COMMIT` / `ROLLBACK`):**
+1. **Find/Create Client (Keyed on Cédula):**
+   - Query `tokki_shop.clients` WHERE `cedula = <normalized cedula>`.
+   - If found: reuse existing `client_id`.
+   - If not found: `INSERT INTO tokki_shop.clients(cedula, name, last_name) VALUES(...) RETURNING client_id`.
+2. **Register/Update Phone in `clients_p_number`:**
+   - Upsert normalized phone into `tokki_shop.clients_p_number` with composite key `(client_id, tlf_num)`:
+     `INSERT INTO tokki_shop.clients_p_number(client_id, tlf_num, last_used_at) VALUES($1, $2, NOW()) ON CONFLICT (client_id, tlf_num) DO UPDATE SET last_used_at = NOW()`.
+3. **Validate Products & Deduct Stock:**
    - Loop through `items`, `SELECT ... FOR UPDATE` each product row (locks against concurrent archive/stock updates — prevents overselling).
    - Reject if missing (404), `qty <= 0` (400), or `qty_available < product_qty` (400) — early failures `ROLLBACK` the whole order transaction.
    - Deduct `product_qty` from `qty_available`, recalculating `in_stock = (qty_available > 0)`.
    - Accumulate `total_amount += product_price * product_qty` (database is source of truth for prices).
-3. **Insert Order Header:** `INSERT INTO tokki_shop.orders (...)` -> get `order_id` via `RETURNING order_id`. `processed_by` is `NULL` for now (Clerk not yet wired); `status` is set to `'pending'` explicitly.
-4. **Insert Order Items:** Loop through items and insert snapshotted `product_name`, `product_qty`, `product_price` into `tokki_shop.order_items`.
-5. **Commit & Return:** `COMMIT` and return `201 Created` with order summary (`order_id`, `delivery_type`, `payment_method`, `total_amount`, `items`) in the standard `{ success, data, message }` envelope.
+4. **Insert Order Header:** `INSERT INTO tokki_shop.orders (client_id, contact_phone, delivery_type, total_amount, payment_method, processed_by, status, created_at) VALUES(...)` -> snapshots `contact_phone` and gets `order_id`. `status` is set to `'pending'`.
+5. **Insert Order Items:** Loop through items and insert snapshotted `product_name`, `product_qty`, `product_price` into `tokki_shop.order_items`.
+6. **Commit & Return:** `COMMIT` and return `201 Created` with order summary (`order_id`, `order_token`, `delivery_type`, `payment_method`, `total_amount`, `contact_phone`, `items`) in the standard `{ success, data, message }` envelope.
 
-### `GET /api/orders` — List All Orders
-Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amount`, `status`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`.
+### `GET /api/orders/receipt/:order_token` — Order Confirmation Receipt (Public)
+Public endpoint using an unguessable UUIDv4 `order_token` to return the order receipt (`order_id`, `order_token`, `status`, `delivery_type`, `payment_method`, `client`, `total_amount`, `created_at`, `items[]`). Allows buyers to load and refresh their confirmation screen securely without exposing sequential IDs or requiring authentication.
 
-### `GET /api/orders` — List All Orders
-Returns every order with buyer info (`name`, `last_name`, `tlf_num`), `total_amount`, `status`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`.
+### `GET /api/orders` — List All Orders (Admin)
+Returns every order with buyer info (`name`, `last_name`, `tlf_num` reflecting `contact_phone` snapshot, `cedula`), `delivery_type`, `payment_method`, `total_amount`, `status`, `item_count` (number of distinct line items via `COUNT(o_i.product_id)`), and `created_at`. Ordered newest-first. Empty set returns `{ success: true, message: "No orders have been placed." }`. Requires Clerk admin session.
 
-### `GET /api/orders/:order_id` — Single Order Details
-Returns the order header + client info (including `status`), plus each line item (snapshot `product_name`, `product_qty`, `product_price`, and computed `product_total = qty * price`). Controller folds the flat join rows into `{ header, client, items[] }`. 404 if the order doesn't exist.
+### `GET /api/orders/:order_id` — Single Order Details (Admin)
+Returns the order header + client info (including `order_token`, `status`, `delivery_type`, `payment_method`, and `tlf_num` reflecting the `contact_phone` snapshot), plus each line item (snapshot `product_name`, `product_qty`, `product_price`, and computed `product_total = qty * price`). Requires Clerk admin session. 404 if the order doesn't exist.
 
-### `GET /api/orders/client/:client_id` — Client Order History
-Same shape as the dashboard list, filtered by `client_id`, newest-first. Empty result returns `"No orders have been placed by this client."`; a nonexistent `client_id` returns 404 (`"Client doesn't exist."`).
+### `GET /api/orders/client/:client_id` — Client Order History (Admin)
+Same shape as the dashboard list (`tlf_num` reflecting `contact_phone` snapshot, `delivery_type`, `payment_method`), filtered by `client_id`, newest-first. Empty result returns `"No orders have been placed by this client."`; a nonexistent `client_id` returns 404 (`"Client doesn't exist."`). Requires Clerk admin session.
 
-### `PATCH /api/orders/:order_id/cancel` — Cancel Order
+### `PATCH /api/orders/:order_id/cancel` — Cancel Order (Admin)
 The `orders` table carries a lifecycle `status`; records are never hard-deleted.
 
 **Cancel logic (inside a transaction):**
@@ -173,7 +190,7 @@ The `orders` table carries a lifecycle `status`; records are never hard-deleted.
 
 > **Deviation from original plan:** the plan allowed canceling from `'approved'` too; implementation restricts cancel to `'pending'` only.
 
-### `PATCH /api/orders/:order_id/approve` — Approve Order
+### `PATCH /api/orders/:order_id/approve` — Approve Order (Admin)
 Transitions `'pending'` -> `'approved'` when the shop owner confirms an order. No stock changes — quantities were deducted at checkout.
 
 **Approve logic (inside a transaction):**
@@ -191,5 +208,5 @@ Transitions `'pending'` -> `'approved'` when the shop owner confirms an order. N
 
 All originally planned endpoints are now implemented. The forward-looking backlog lives in [`ROADMAP.md`](ROADMAP.md); agent-oriented project context lives in [`CONTEXT.md`](CONTEXT.md). Highlights of known gaps:
 
-* **Auth wired:** `clerkMiddleware()` + `requireAdmin` protect product mutations and all order endpoints except checkout (see §2). Remaining: webhook-based user sync, token-attachment on frontend admin calls.
-* **Test coverage:** 93 unit tests across six suites — phone + cedula validation (`tests/validate.test.js`), field-type validation (`tests/product-validation.test.js`), image storage (`storage.test.js`), upload middleware (`upload.test.js`), image-upload + image-removal orchestration (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).
+* **Auth wired:** `clerkMiddleware()` + `requireAdmin` protect product mutations and all order management endpoints (`GET /api/orders`, `GET /api/orders/:id`, `GET /api/orders/client/:id`, cancel, approve). Guest checkout (`POST /api/orders`) and receipt (`GET /api/orders/receipt/:order_token`) remain public.
+* **Test coverage:** 116 unit tests across 10 suites — phone + cedula validation (`tests/validate.test.js`), field-type validation (`tests/product-validation.test.js`), image storage (`storage.test.js`), upload middleware (`upload.test.js`), image-upload + image-removal orchestration (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`), params parsing (`params.test.js`), client & phone synchronization (`client-sync.test.js`), order creation validation (`orders.test.js`), and order receipt resolution (`order-receipt.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).

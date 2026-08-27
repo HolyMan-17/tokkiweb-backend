@@ -28,7 +28,7 @@ Setup: `pnpm install` → create `.env` → `psql "$DATABASE_URL" -f src/schema/
 
 Commands: `pnpm dev` (watch), `pnpm test` (Jest, ESM via `--experimental-vm-modules`), `pnpm start`.
 
-Business context: Venezuelan phone numbers are the primary customer identifier (+58); phones are stored E.164 specifically so the owner can follow up via WhatsApp. The Venezuelan ID (`cedula`) is a secondary, optional client field.
+Business context: The Venezuelan national ID (`cedula`) is the primary customer identifier across the store. Phone numbers are stored in E.164 format and tracked per client in `clients_p_number` (with an order-level `contact_phone` snapshot in `orders`) so the shop owner can reliably follow up via WhatsApp.
 
 ---
 
@@ -57,17 +57,21 @@ Archive sets `is_archived = true, qty_available = 0, in_stock = false`. All publ
 `products.category` stores the **display name** exactly as the frontend renders it (`'Maquillaje'`, `'Skincare'`, … — the allowed set lives in the frontend's `src/constants/index.ts` `CATEGORIES`). The storefront filters with strict equality (`p.category === category.name`), so never store slugs or re-cased variants. `GET /api/products?category=` is an exact match. DB default `'Otros'` covers pre-category rows.
 
 ### Phones
-Always pass user-supplied phones through `normalizeAndValidatePhone(country_code, tlf_num)` (`src/utils/validate.js`) → returns canonical E.164 or `null`. Accepts local (`0414...`) + country code, or full international. Store only the normalized value; `clients.tlf_num` is UNIQUE.
+Always pass user-supplied phones through `normalizeAndValidatePhone(country_code, tlf_num)` (`src/utils/validate.js`) → returns canonical E.164 or `null`. Accepts local (`0414...`) + country code, or full international. Client phone records are stored in `tokki_shop.clients_p_number` (`phone_id`, `client_id`, `tlf_num`, `is_primary`, `last_used_at`, `created_at`) with a composite unique constraint `(client_id, tlf_num)`. Order-level phone numbers are snapshotted in `orders.contact_phone`.
 
 ### Cedula
-Optional client field (`clients.cedula VARCHAR(12) UNIQUE`, nullable). Always pass user-supplied values through `normalizeAndValidateCedula(raw)` → canonical `"V-12345678"` or `null` (absent/empty = NULL, not an error). Stored only when the client row is created — never backfilled on reuse. A cedula owned by another client surfaces as PG `23505` → global handler → `409`.
+Primary client identifier (`clients.cedula VARCHAR(12) UNIQUE NOT NULL`). Always pass user-supplied values through `normalizeAndValidateCedula(raw)` → canonical `"V-12345678"`. Required for all checkouts. Missing cédula returns `400` `"All client info fields are required."`; malformed values return `400` `"Invalid cedula format."`. Clients are keyed primarily on `cedula` during checkout lookup/creation.
 
-### Auth (Clerk — wired)
+### Auth & IDOR Security Rule
 - `clerkMiddleware()` runs in `src/app.js`; protected routes chain `requireAdmin` (`src/middleware/auth.js`).
 - `requireAdmin`: no session → `401`; Clerk user's `publicMetadata.role` must be `'owner'` or `'tech'` (same values the frontend sets in Clerk Dashboard) → else `403`; on success stashes `req.adminUser = { clerk_user_id, email, user_type }`.
 - Role → DB mapping: `owner`→`shop_owner`, `tech`→`tech_admin`. Admin users are lazily upserted into `tokki_shop.users` when they cancel/approve orders, and that id lands in `orders.processed_by`.
 - **Do NOT use `requireAuth()`** from `@clerk/express` v2 — it's deprecated and redirects browsers instead of returning JSON 401.
-- Public endpoints: product GETs + `POST /api/orders` (guest checkout). Everything else requires an admin session token.
+- **IDOR Protection Rule:** `GET /api/orders/:order_id` is STRICTLY admin-only (`requireAdmin`) to prevent enumeration/scraping of customer PII. Public guest receipt access MUST use the cryptographically unguessable capability URL: `GET /api/orders/receipt/:order_token` (UUIDv4).
+- Public endpoints: product GETs + `POST /api/orders` (guest checkout) + `GET /api/orders/receipt/:order_token` (secure order receipt). Everything else requires an admin session token.
+
+### Delivery & Payment Projections
+`orders.delivery_type` and `orders.payment_method` must always be projected and returned across all order queries (`getSingleOrder`, `getOrderReceipt`, `getAllOrders`, `getClientHistory`) so both storefront receipts and admin backoffice modals display fulfillment and payment methods without extra requests.
 
 ### Delivery types
 `orders.delivery_type` is enforced at both layers: the controller rejects anything outside `['envio_nacional', 'delivery', 'retiro_tienda']` with 400, and a DB CHECK constraint (`orders_delivery_type_check`, added `NOT VALID` so legacy rows survive) backstops it. The API stores/returns **slugs only**; accented display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") are a frontend concern (`DELIVERY_TYPES` in `src/constants/index.ts`). Keep the two lists in sync manually — same discipline as categories.
@@ -83,7 +87,7 @@ ES Modules everywhere (`import`/`export`). Controllers hold SQL inline as templa
 
 ### Testing — TDD is mandatory
 All development follows a **test-driven approach**: for every change, write the failing test first, run it to see it fail, then implement just enough to make it pass (red → green → refactor). No production code ships without a test that exercises it — including bug fixes (the test reproduces the bug first).
-Unit tests live in `tests/*.test.js` (Jest, ESM via `--experimental-vm-modules`). Run them with `pnpm test`. Pure helpers like `validate.js` are trivially testable; controllers currently hit Postgres directly, so cover what's testable without a DB (utils, middleware, pure logic) and track integration coverage under ROADMAP P2 #9 before assuming it exists.
+Unit tests live in `tests/*.test.js` (Jest, ESM via `--experimental-vm-modules`). Run them with `pnpm test`. Pure helpers like `validate.js`, `clientSync.js`, `orderReceipt.js` are trivially testable; controllers use dependency injection or mock dbExecutors where appropriate.
 
 ---
 
@@ -94,8 +98,9 @@ Unit tests live in `tests/*.test.js` (Jest, ESM via `--experimental-vm-modules`)
 3. Express-generator leftovers were removed from `package.json` (Aug 2026); `pnpm-workspace.yaml` no longer needs argon2/bcrypt build approvals.
 4. `server.js` runs a startup DB ping before listening — if tests ever import it, they'll need a live DB. Import `src/app.js` for supertest instead.
 5. `.gitignore` excludes `.agents/` and `plans/` — scratch/planning artifacts go there; tracked docs stay at root.
-6. Schema changes: edit `src/schema/tokki_schema.sql` (it's `CREATE ... IF NOT EXISTS`, idempotent-ish but has no migration path — ROADMAP P3 #15). Keep `PROJECT_SUMMARY_AND_PLAN.md` §3 in sync when tables change.
+6. Schema changes: edit `src/schema/tokki_schema.sql` (it's `CREATE ... IF NOT EXISTS`, idempotent migrations at bottom). Keep `PROJECT_SUMMARY_AND_PLAN.md` §3 in sync when tables change.
 7. `orders.processed_by` is populated on cancel/approve via lazy upsert of the acting admin (`src/middleware/auth.js`). Older orders keep NULL.
+8. Server watch mode: always run `pnpm dev` (`node --watch server.js`) during active development so in-memory code automatically reflects edits.
 
 ---
 
@@ -109,12 +114,15 @@ src/middleware/auth.js     requireAdmin (Clerk role check) + users-table upsert 
 src/middleware/upload.js   product-image upload gate: multer memory + mime/magic-byte validation
 src/routes/index.js        mounts /products, /orders
 src/routes/products.js     product routes
-src/routes/orders.js       order routes (incl. /client/:id, /:id/cancel, /:id/approve)
+src/routes/orders.js       order routes (incl. /receipt/:order_token, /client/:id, /:id/cancel, /:id/approve)
 src/controllers/c_products.js   catalog CRUD + soft delete + image upload orchestration (applyProductImage)
-src/controllers/c_orders.js     checkout transaction, listing, lifecycle transitions
+src/controllers/c_orders.js     checkout single transaction (cedula lookup/upsert, clients_p_number sync, stock lock, order header & items), receipt & listing queries, lifecycle transitions
 src/utils/validate.js      phone (E.164) + cedula normalization
+src/utils/clientSync.js    syncClientAndPhone helper (pure DI testable client & phone upsert)
+src/utils/orderReceipt.js  fetchOrderReceipt helper (pure DI testable public receipt resolver)
 src/utils/productValidation.js  strict field-type validators (products create/patch, order items)
+src/utils/params.js        parseIdParam (integer IDs) + parseUuidParam (UUIDv4 tokens)
 src/utils/storage.js       image storage: saveProductImage / deleteProductImage / cleanupProductImages / attachImageUrls / toPublicImageUrl
-src/schema/tokki_schema.sql authoritative DDL (schema tokki_shop)
-tests/                     unit tests: validate (phone+cedula), product-validation, storage, upload, product-image, image-cleanup
+src/schema/tokki_schema.sql authoritative DDL (schema tokki_shop: clients, clients_p_number, users, orders, products, order_items)
+tests/                     unit tests: validate, product-validation, storage, upload, product-image, image-cleanup, params, client-sync, orders, order-receipt (116 tests across 10 suites)
 ```
