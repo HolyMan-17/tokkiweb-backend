@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { ordersController } from '../controllers/c_orders.js'
-import { requireAdmin } from '../middleware/auth.js'
+import { ordersController } from '../controllers/c_orders.js';
+import { requireAdmin } from '../middleware/auth.js';
+import { checkoutLimiter } from '../middleware/rateLimit.js';
 
 const router = Router();
 
-router.post('/', ordersController.createOrder);
+router.post('/', checkoutLimiter, ordersController.createOrder);
 router.get('/', requireAdmin, ordersController.getAllOrders);
 router.get('/client/:client_id', requireAdmin, ordersController.getClientHistory);
 router.get('/receipt/:order_token', ordersController.getOrderReceipt);

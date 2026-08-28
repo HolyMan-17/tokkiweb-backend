@@ -15,13 +15,19 @@ pool.on('error', (err) => {
     process.exit(-1);
 });
 
-export const query = async (text, params) =>{
+export const query = async (text, params) => {
     const start = Date.now();
     const res = await pool.query(text, params);
     const duration = Date.now() - start;
-    console.log('executed query', { text, duration, rows: res.rowCount });
+
+    if (process.env.NODE_ENV !== 'production') {
+        console.log('executed query', { text, duration, rows: res.rowCount });
+    } else if (duration > 1000) {
+        console.warn('Slow query detected:', { text, duration, rows: res.rowCount });
+    }
+
     return res;
-}
+};
 
 // PG NODE MODULE TRANSACTION CLIENT CODE (SEE DOCUMENTATION)
 

@@ -763,19 +763,19 @@ app.get('/health', async (req, res) => {
 
 | Stage | Task | Status |
 |---|---|:---:|
-| **Security** | Install and configure `helmet` with `crossOriginResourcePolicy: { policy: "cross-origin" }` | 🔲 |
-| **Security** | Configure `express-rate-limit` on global API, checkout (`/api/orders`), and image upload | 🔲 |
-| **Security** | Enable `app.set('trust proxy', 1)` in `src/app.js` | 🔲 |
-| **Security** | Cap `express.json({ limit: '10kb' })` and urlencoded bodies | 🔲 |
-| **Security** | Set `FRONTEND_ORIGINS=https://www.tokkishopve.com,https://tokkishopve.com` in `.env` | 🔲 |
-| **Security** | Silence verbose query logging in `src/config/db.js` for production | 🔲 |
-| **Auth** | Set production Clerk Secret & Publishable keys | 🔲 |
-| **Auth** | Ensure admin user accounts have `publicMetadata: { role: "owner" }` in Clerk | 🔲 |
-| **Infra** | Provision Linux VPS with UFW firewall (22, 80, 443 only) | 🔲 |
-| **Database** | Create `tokki_prod` DB and `tokki_app` user with strong password | 🔲 |
-| **Database** | Run `psql ... -f src/schema/tokki_schema.sql` to initialize tables | 🔲 |
-| **Process** | Configure systemd service (`/etc/systemd/system/tokki-backend.service`) and enable on boot | 🔲 |
-| **Web Server**| Configure Nginx for `api.tokkishopve.com` with SSL, proxy to 3000, and offload `/images/` | 🔲 |
-| **Monitoring**| Implement `GET /health` route and set up external ping | 🔲 |
+| **Security** | Install and configure `helmet` with `crossOriginResourcePolicy: { policy: "cross-origin" }` | ✅ |
+| **Security** | Configure `express-rate-limit` on global API, checkout (`/api/orders`), and image upload | ✅ |
+| **Security** | Enable `app.set('trust proxy', 1)` in `src/app.js` | ✅ |
+| **Security** | Cap `express.json({ limit: '10kb' })` and urlencoded bodies | ✅ |
+| **Security** | Set `FRONTEND_ORIGINS=https://www.tokkishopve.com,https://tokkishopve.com` in `.env` | ✅ |
+| **Security** | Silence verbose query logging in `src/config/db.js` for production | ✅ |
+| **Auth** | Set production Clerk Secret & Publishable keys | ✅ |
+| **Auth** | Ensure admin user accounts have `publicMetadata: { role: "owner" }` in Clerk | ✅ |
+| **Infra** | Provision Linux VPS with UFW firewall (22, 80, 443 only) | ✅ |
+| **Database** | Create `tokki_prod` DB and `tokki_app` user with strong password | ✅ |
+| **Database** | Run `psql ... -f src/schema/tokki_schema.sql` to initialize tables | ✅ |
+| **Process** | Configure systemd service (`/etc/systemd/system/tokki-backend.service`) and enable on boot | ✅ |
+| **Web Server**| Configure Nginx for `api.tokkishopve.com` with SSL, proxy to 3000, and offload `/images/` | ✅ |
+| **Monitoring**| Implement `GET /health` route and set up external ping | ✅ |
 | **Backups** | Configure automated nightly `pg_dump` and image directory sync crons | 🔲 |
-| **Testing** | Smoke test: Catalog query, Guest checkout, Public receipt, Admin login & Image upload | 🔲 |
+| **Testing** | Smoke test: Catalog query, Guest checkout, Public receipt, Admin login & Image upload | ✅ |
