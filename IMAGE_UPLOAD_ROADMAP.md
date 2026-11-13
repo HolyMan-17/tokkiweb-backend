@@ -1,5 +1,7 @@
 # Tokki Shop Backend — Image Upload Roadmap
 
+> **Status: SHIPPED AND SUPERSEDED (2026-11-13).** The multi-image product gallery went to production with **v0.10.0**: an ordered gallery of up to 5 images per product with add (`POST /api/products/:product_id/images`), remove-by-URL (`DELETE /api/products/:product_id/images?url=`), and reorder (`PUT /api/products/:product_id/images/order`) endpoints, backed by the `tokki_shop.product_images` table and the migration `src/schema/migrations/2026-11-13-product-gallery.sql`. The single-image pipeline documented below was the stepping stone; the current contracts live in [`API_CONTRACT.md`](API_CONTRACT.md) §1.6–§1.9 (§1.9 covers the legacy cover endpoints kept for compat). This roadmap is preserved as history — do not extend it; new work goes to [`ROADMAP.md`](ROADMAP.md).
+
 Feature backlog for product image uploads. One step per iteration; every step follows **TDD** (red → green → refactor, per `CONTEXT.md`). Statuses: `[ ]` todo, `[x]` done.
 
 ---
@@ -19,7 +21,7 @@ Done: `/images` mounted on `express.static(resolveUploadDir(), { maxAge: '7d', i
 
 ---
 
-## Remaining steps
+## Shipped steps (all done)
 
 ### [x] 2. Upload middleware (`src/middleware/upload.js`)
 Done: `uploadImage` wraps multer `.single('image')` — memory storage, `MAX_IMAGE_BYTES` = 5 MB, declared-mime allowlist in `fileFilter`, then magic-byte sniff (`fileTypeFromBuffer`) before calling `next()`. All failure paths answer a 400 envelope directly; `translateUploadError` maps multer codes to friendly messages. 15 tests in `tests/upload.test.js`, driven via fake multipart request streams (no HTTP server).
@@ -36,6 +38,9 @@ Done: pure helper `cleanupProductImages(keys, removeFile)` in `src/utils/storage
 ### [x] 6. Docs & contract sync
 Done: `API_CONTRACT.md` gained the §1.6 endpoint section (multipart, field `image`, constraints, 400/404 cases), `product_image_url` added to all four product response examples. `PROJECT_SUMMARY_AND_PLAN.md`: §3.C lists `product_image`, §4 gained the image feature block, §6 test-coverage bullet updated. `README.md`: endpoint table + admin-only split mention the upload route; env vars documented in `CONTEXT.md`. `CONTEXT.md`: new "Images" convention section (keys not URLs, magic-byte sniffing, delete-after-commit discipline) + map/env-table refresh.
 
+### [x] 7. Multi-image gallery (superseding step, shipped 2026-11-13)
+Done: gallery table `tokki_shop.product_images` (`image_key` + `sort_order` 0–4, `CHECK` on range, `UNIQUE (product_id, sort_order)` — sort_order 0 is the cover) per `src/schema/migrations/2026-11-13-product-gallery.sql` (STEP 1 + STEP 1b pre-deploy backfill of legacy covers, STEP 2 drops `products.product_image` post-deploy). Endpoints in `src/routes/products.js` / `src/controllers/c_products.js`: `POST /:product_id/images` appends one image (409 at 5 — pre-checked and re-enforced by the DB CHECK + unique constraint against concurrent races), `DELETE /:product_id/images?url=` removes by URL and reindexes (file deleted only after commit), `PUT /:product_id/images/order` reorders from a `{ urls }` body (exact-set match required; first URL = cover). The legacy single-image endpoints stay as compat: `POST /:product_id/image` replaces the cover, `DELETE /:product_id/image` clears it. All product reads now return `product_image_urls` (ordered, max 5) with `product_image_url` kept as the `urls[0] ?? null` alias. Covered by `tests/product-image.test.js` (add / remove-by-URL / replace-cover / clear-cover / reorder orchestrators).
+
 ---
 
 **Feature complete — all steps shipped.**
@@ -47,4 +52,4 @@ Done: `API_CONTRACT.md` gained the §1.6 endpoint section (multipart, field `ima
 - **Envelope & codes:** all responses use `{ success, data?, message? }`; uploads are mutations → 401 without session, 403 without `owner`/`tech` role, 400 for bad payloads, 404 for missing/archived products.
 - **No SQL interpolation:** the `UPDATE ... SET product_image = $n` stays fully parametrized; key comes from our own UUID generator, but still binds via `$n`.
 - **Windows paths:** everything goes through `path.join(resolveUploadDir(), key)` — no string concatenation of separators.
-- **Out of scope (later):** S3/object-storage backend behind the same `storage.js` interface; multiple images per product; image deletion endpoint without replacement.
+- **Out of scope (later):** S3/object-storage backend behind the same `storage.js` interface. ~~Multiple images per product~~ and ~~an image-deletion endpoint without replacement~~ shipped 2026-11-13 — see step 7 above.

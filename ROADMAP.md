@@ -44,7 +44,7 @@ Done: Folded client lookup/creation and phone registration into the single conso
 ## P2 — Testing
 
 ### [ ] 9. Controller/integration tests
-116 unit tests across 10 suites exist (validation ×2, storage, upload, product-image orchestration, image-cleanup, params, client-sync, orders validation, order-receipt) — but they exercise utils/middleware/pure orchestrators only. No test spins up HTTP routes against a real DB.
+153 unit tests across 12 suites exist (validation ×2, storage, upload, product-image orchestration, image-cleanup, params, client-sync, orders validation, order-receipt, health, rate-limit) — they exercise utils/middleware/pure orchestrators; the only HTTP-level test is the supertest `GET /health` check (`tests/health.test.js`, needs a live DB). No test covers product/order HTTP routes against a real DB.
 - Spin up a test database (separate `DATABASE_URL`), apply `tokki_schema.sql`, seed fixtures.
 - Cover: products CRUD incl. archived behavior; order creation happy path; oversell rejection under stock contention; cancel restores stock exactly once; approve/cancel guards; 404s.
 - Note: `jest.config.js` uses `node --experimental-vm-modules`; keep ESM-compatible patterns.
@@ -74,22 +74,22 @@ Done: Implemented cédula-centric client model (`clients.cedula` UNIQUE NOT NULL
 - ~~`.env.example`~~ done (includes `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `UPLOAD_DIR`, `PUBLIC_BASE_URL`).
 - ~~Dead deps~~ removed Aug 2026 (`argon2`, `bcrypt`, `cookie-parser`, `debug`, `http-errors`, `morgan`, `pug`); stray root `test` file deleted.
 - Structured logging still pending (morgan was removed unused — wire `pino`/`winston` or keep minimal).
-- Migrations strategy: schema file is `CREATE TABLE IF NOT EXISTS` — introduce numbered migrations before the next schema change (e.g., status constraint widening).
+- Migrations strategy: schema file is `CREATE TABLE IF NOT EXISTS`; the first dated migration landed Nov 2026 (`src/schema/migrations/2026-11-13-product-gallery.sql`, tracked in git, with a pre/post-deploy runbook) — formal numbered-migration tooling is still pending before the next schema change (e.g., status constraint widening).
 
 ---
 
 ## P4 — Image pipeline follow-ups
 
-The core image feature ships (upload/replace/remove, WebP normalization, immutable static serving). Deferred items:
+The image pipeline shipped, then graduated to a full **multi-image gallery on 2026-11-13 (v0.10.0, first production deploy)**: ordered gallery up to 5 images per product with add / remove-by-URL / reorder endpoints and the legacy cover endpoints kept for compat (`API_CONTRACT.md` §1.6–§1.9; migration `src/schema/migrations/2026-11-13-product-gallery.sql`). Deferred items:
 
-### [ ] 16. nginx in front of Node (VPS)
-Serve `/images/` directly from disk (sendfile, no Node round-trip) and proxy `/api` → Node. Also enables gzip/brotli for JSON.
+### [x] 16. nginx in front of Node (VPS) — done 2026-11-13
+Live since the first production deploy: `api.tokkishopve.com` terminates TLS, proxies `/api` → `127.0.0.1:3000`, and offloads `/images/` directly from disk (30-day immutable cache, `client_max_body_size 6M`). Full config in `PRODUCTION_DEPLOYMENT_ROADMAP.md` Phase 7.
 
 ### [ ] 17. Uploads-dir backup cron (VPS)
-`UPLOAD_DIR` lives outside the repo — add a nightly `restic`/`rsync` of that directory to any remote target. Images are re-uploadable, so weekly is acceptable; nightly is cheap.
+`UPLOAD_DIR` lives outside the repo — add a nightly `restic`/`rsync` of that directory to any remote target. Images are re-uploadable, so weekly is acceptable; nightly is cheap. (Still unconfigured as of the 2026-11-13 deploy — see the checklist in `PRODUCTION_DEPLOYMENT_ROADMAP.md`.)
 
 ### [ ] 18. Storage-provider swap path
 DB stores keys only and responses compose URLs from `PUBLIC_BASE_URL`, so moving to Cloudflare R2 later means rewriting `src/utils/storage.js` (~50 lines) + an rsync of existing files + env change. No DB migration needed.
 
-### [ ] 19. Client-side pre-compression (frontend)
-Backend already normalizes to WebP ≤1600px server-side; optional browser-side compression (`browser-image-compression`) would trim upload bandwidth on slow connections.
+### [x] 19. Client-side pre-compression (frontend) — shipped 2026-11-13
+The frontend ships `compressImage()` (`tokkiweb-frontend/src/utils/compressImage.ts`): files ≤1 MB pass through untouched; larger files are canvas-downscaled to ≤1600 px and re-encoded as WebP q0.82 (one extra q0.7 pass if still >1.5 MB; never throws — falls back to the original file). Custom canvas implementation, not the `browser-image-compression` package.

@@ -12,7 +12,7 @@ This document summarizes all architectural decisions, database schemas, complete
   - `src/config/db.js`: PostgreSQL connection pool adapter with query execution logging and 5-second connection leak diagnostics.
   - `src/routes/`: Route declarations mapping URL endpoints to controllers.
   - `src/controllers/`: Express handlers reading HTTP requests, performing validation, executing direct SQL queries via database client transactions, and returning standardized JSON. SQL strings are always fully literal — no `${}` interpolation into queries, ever; dynamic behavior means separate complete queries per branch and all values bind via `$n` params.
-  - `src/utils/validate.js`: Shared validation helpers (currently `normalizeAndValidatePhone`) reused across controllers.
+  - `src/utils/validate.js`: Shared validation helpers (phone E.164 + cédula normalization) reused across controllers.
   - `src/schema/tokki_schema.sql`: Authoritative PostgreSQL schema file for the `tokki_shop` schema.
 
 ---
@@ -69,10 +69,11 @@ Maps Clerk authenticated user IDs to internal administrative accounts.
 * `product_price` (NUMERIC(9, 2) NOT NULL)
 * `product_description` (TEXT NOT NULL)
 * `category` (VARCHAR(100) NOT NULL DEFAULT `'Otros'`) -- display name; values mirror the frontend `CATEGORIES` constant
-* `product_image` (TEXT, nullable) -- storage key shaped `products/<uuid>.webp`; public URLs are composed at response time, never stored
 * `qty_available` (INTEGER NOT NULL DEFAULT 0)
 * `in_stock` (BOOLEAN NOT NULL DEFAULT FALSE)
 * `is_archived` (BOOLEAN NOT NULL DEFAULT FALSE) -- Soft-delete flag
+
+> **Gallery note:** gallery images live in the `product_images` table (see **G** below). The legacy single-image `products.product_image` column was backfilled into the gallery and dropped by the 2026-11-13 migration (`src/schema/migrations/2026-11-13-product-gallery.sql`, STEP 2).
 
 ### E. `orders` Table (Store Purchase Headers)
 * `order_id` (SERIAL PRIMARY KEY)
@@ -95,6 +96,15 @@ Preserves historical item names and prices at time of purchase.
 * `product_qty` (INTEGER NOT NULL)
 * `product_price` (DECIMAL(9, 2) NOT NULL)
 
+### G. `product_images` Table (Product Image Gallery — max 5 per product)
+Ordered gallery for each product; `sort_order` 0 is the cover (portada). Introduced by `src/schema/migrations/2026-11-13-product-gallery.sql`.
+* `image_id` (SERIAL PRIMARY KEY)
+* `product_id` (INTEGER NOT NULL FK -> `products.product_id` ON DELETE CASCADE)
+* `image_key` (VARCHAR(255) NOT NULL) -- storage key shaped `products/<uuid>.webp`; public URLs are composed at response time, never stored
+* `sort_order` (INTEGER NOT NULL, CHECK (`sort_order` BETWEEN 0 AND 4))
+* `created_at` (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+* Constraints: `UNIQUE (product_id, sort_order)` (guards the 5-image cap against concurrent uploads) + index on `product_id`
+
 
 ---
 
@@ -108,10 +118,12 @@ Preserves historical item names and prices at time of purchase.
 
 **Category convention:** stored as the exact display name the frontend renders and matches on (`p.category === CATEGORIES[i].name`); the allowed set lives in the frontend's `src/constants/index.ts`. Pre-category rows default to `'Otros'` via an idempotent `ALTER TABLE` at the bottom of `tokki_schema.sql`.
 
-**Product images:** every product response carries `product_image_url`, composed at response time by `attachImageUrls`/`toPublicImageUrl` — raw keys never leave the API.
-* **`POST /api/products/:product_id/image`** *(admin)*: multipart upload gated by `uploadImage` (memory storage, 5 MB cap, declared-mime allowlist + magic-byte sniff), normalized to WebP (≤1600px, q82) by `saveProductImage`, key persisted transactionally with an `is_archived = false` guard; replaced files are deleted only after commit, failed updates clean up the new file (`applyProductImage` orchestrates the save → persist → cleanup sequence).
-* **`DELETE /api/products/:product_id/image`** *(admin)*: nulls the key transactionally (`clearProductImage`), deletes the file after commit; idempotent no-op when no image is set.
-* Archiving a product deletes its stored file post-commit (`cleanupProductImages`, best-effort).
+**Product images:** every product response carries `product_image_urls` — the ordered gallery (max 5; index 0 = cover/portada) — plus the legacy alias `product_image_url = product_image_urls[0] ?? null`, composed at response time by `attachImageUrls`/`toPublicImageUrl` from the `product_images` table keys; raw keys never leave the API.
+* **`POST /api/products/:product_id/images`** *(admin)*: appends one multipart image gated by `uploadImage` (memory storage, 5 MB cap, declared-mime allowlist + magic-byte sniff), normalized to WebP (≤1600px, q82) by `saveProductImage`; the key is appended transactionally (`MAX(sort_order) + 1`) with an `is_archived = false` guard; a `409` is returned at 5 images (pre-checked and re-enforced by the DB CHECK + unique constraint against concurrent races) and failed inserts clean up the new file (`addProductImage` orchestrates save → persist → cleanup).
+* **`DELETE /api/products/:product_id/images?url=`** *(admin)*: removes the image matching the URL (`removeProductImageByUrl`), reindexes the remaining rows so no sort gaps remain; if the cover is removed the next image becomes the cover; the file is deleted only after the commit succeeds.
+* **`PUT /api/products/:product_id/images/order`** *(admin)*: replaces the gallery order from a `{ urls }` body (`reorderProductImages`); the list must contain every gallery image exactly once — first URL becomes the cover.
+* **Legacy compat (contract §1.9):** `POST /api/products/:product_id/image` replaces the cover (`replaceCoverImage` — the old cover file is deleted only after the new key is committed); `DELETE /api/products/:product_id/image` clears the cover (`clearCoverImage`), idempotent when the gallery is empty.
+* Archiving a product deletes its gallery rows and all stored files post-commit (`cleanupProductImages`, best-effort).
 * Stored images are served statically at `/images/<key>` with 7-day immutable caching.
 
 ---
@@ -206,7 +218,7 @@ Transitions `'pending'` -> `'approved'` when the shop owner confirms an order. N
 
 ## 🚧 6. What's Next
 
-All originally planned endpoints are now implemented. The forward-looking backlog lives in [`ROADMAP.md`](ROADMAP.md); agent-oriented project context lives in [`CONTEXT.md`](CONTEXT.md). Highlights of known gaps:
+All originally planned endpoints are now implemented, and the backend is **live in production since 2026-11-13 (v0.10.0)** — that release shipped the multi-image product gallery (§3.G, §4). The forward-looking backlog lives in [`ROADMAP.md`](ROADMAP.md); agent-oriented project context lives in [`CONTEXT.md`](CONTEXT.md). Highlights of known gaps:
 
 * **Auth wired:** `clerkMiddleware()` + `requireAdmin` protect product mutations and all order management endpoints (`GET /api/orders`, `GET /api/orders/:id`, `GET /api/orders/client/:id`, cancel, approve). Guest checkout (`POST /api/orders`) and receipt (`GET /api/orders/receipt/:order_token`) remain public.
-* **Test coverage:** 125 unit tests across 12 suites — phone + cedula validation (`tests/validate.test.js`), field-type validation (`tests/product-validation.test.js`), image storage (`storage.test.js`), upload middleware incl. rejection logging (`upload.test.js`), image-upload + image-removal orchestration (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`), params parsing (`params.test.js`), client & phone synchronization (`client-sync.test.js`), order creation validation (`orders.test.js`), order receipt resolution (`order-receipt.test.js`), health endpoint (`health.test.js`), and rate limiting (`rate-limit.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).
+* **Test coverage:** 153 unit tests across 12 suites — phone + cedula validation (`tests/validate.test.js`), field-type validation (`tests/product-validation.test.js`), image storage incl. gallery URL mapping (`storage.test.js`), upload middleware incl. rejection logging (`upload.test.js`), gallery orchestration: add / remove-by-URL / replace-cover / clear-cover / reorder (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`), params parsing (`params.test.js`), client & phone synchronization (`client-sync.test.js`), order creation validation (`orders.test.js`), order receipt resolution (`order-receipt.test.js`), health endpoint (`health.test.js`), and rate limiting (`rate-limit.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).

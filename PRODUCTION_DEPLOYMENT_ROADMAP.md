@@ -3,11 +3,12 @@
 > **Target Application:** `tokkiweb-backend` (Node.js 20+ / Express 4.x / PostgreSQL / Clerk Auth / Sharp & Multer Image Pipeline)  
 > **Production Domain:** `tokkishopve.com` (`api.tokkishopve.com` for API, `www.tokkishopve.com` for Frontend & Admin)  
 > **Process Manager:** Native Linux `systemd` (Bare-Metal VPS)  
-> **Status:** Actionable Deployment & Security Guide  
+> **Status:** LIVE in production since 2026-11-13 (v0.10.0 — multi-image gallery release). This guide remains the go-forward deployment & security reference.
 
 ---
 
 ## Table of Contents
+0. [Deploy-Day Record — First Production Deployment (2026-11-13)](#0-deploy-day-record--first-production-deployment-2026-11-13)
 1. [Architecture, Domain & DNS Setup](#1-architecture-domain--dns-setup)
    - [DNS Records Configuration](#dns-records-configuration)
    - [Frontend Routing & CORS Origin Clarification](#frontend-routing--cors-origin-clarification)
@@ -34,6 +35,20 @@
    - [Database Backup Cron Job](#database-backup-cron-job)
    - [Images Backup Cron Job](#images-backup-cron-job)
 5. [Pre-Launch & Post-Deployment Checklist](#5-pre-launch--post-deployment-checklist)
+
+---
+
+## 0. Deploy-Day Record — First Production Deployment (2026-11-13)
+
+The FIRST production deployment was executed on **2026-11-13**, releasing **v0.10.0** (the multi-image product gallery). Record of what was actually done, for future deploy days:
+
+* **Runtime:** bare-metal VPS, systemd unit `tokki-backend.service`, app at `/var/www/tokkiweb-backend` (git-pull deploys from `main`), uploads at `/var/www/tokki-uploads`, nginx `api.tokkishopve.com`, PostgreSQL 16 with the `tokki_shop` schema.
+* **Database migration ran BEFORE the deploy** (per the runbook in `src/schema/migrations/2026-11-13-product-gallery.sql`):
+  * Production database `tokki`: **STEP 1 + STEP 1b applied pre-deploy** (gallery table + cover backfill), **STEP 2 applied after the new backend was live** (legacy `products.product_image` column dropped).
+  * Dev database `tokki_dev` was **NOT migrated** — intentional; run STEP 1 (then 1b/2 around its next deploy) on it whenever needed.
+* **App deploy:** `git pull` to `1da99d2` (v0.10.0) → `pnpm install --frozen-lockfile --prod` → `sudo systemctl restart tokki-backend`.
+* **Smoke test:** `GET /api/products` against the live API. There is **no** `/api/health` route under the `/api` namespace (see the status note in §3.9; a root-level `GET /health` does exist in the app).
+* **nginx requirement:** the API server block must set `client_max_body_size 6M;` (already in the Phase 7 config). nginx's 1 MB default 413s any image upload over 1 MB before Node sees it — and the production SPA calls the API same-origin (`www.tokkishopve.com/api/...`), so the *frontend's* server block needs the same directive (see `CONTEXT.md` gotcha #2).
 
 ---
 
@@ -708,6 +723,8 @@ app.get('/health', async (req, res) => {
   }
 });
 ```
+
+> **Status note (2026-11-13, post first deploy):** a root-level `GET /health` (DB ping + uptime + timestamp, exactly as snippeted above) has been implemented in `src/app.js` since Aug 2026 and is covered by `tests/health.test.js`. There is **no** dedicated `/api/health` route under the `/api` namespace, and the 2026-11-13 deploy's smoke checks used `GET /api/products`. Whether to graduate to an `/api/*`-namespaced health route (and wire up external uptime pinging) remains an open follow-up.
 
 ---
 

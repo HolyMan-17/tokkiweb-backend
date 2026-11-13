@@ -22,9 +22,9 @@ Backend API for the **Tokki Shop** storefront: a product catalog with guest chec
 | `CLERK_PUBLISHABLE_KEY` | Clerk publishable key (`pk_test_...`) — also required by `clerkMiddleware()` server-side (SDK builds auth context from it); safe to expose, same value the frontend holds |
 | `FRONTEND_ORIGINS` | Comma-separated CORS allowlist (default `http://localhost:5173`) |
 | `UPLOAD_DIR` | Root folder for stored product images (default `./uploads`; served at `/images`, gitignored) |
-| `PUBLIC_BASE_URL` | Base URL used to compose absolute `product_image_url`s (e.g. `http://localhost:3000`); empty → relative URLs. Local dev **must** set it to `http://localhost:3000` (Vite doesn't proxy `/images`, so relative URLs 404 in the dev SPA); prod uses `https://api.tokkishopve.com`. A wrong value here doesn't break uploads — files save fine, but every image 404s in the browser |
+| `PUBLIC_BASE_URL` | Base URL used to compose absolute product image URLs (`product_image_urls` / legacy alias `product_image_url`) (e.g. `http://localhost:3000`); empty → relative URLs. Local dev **must** set it to `http://localhost:3000` (Vite doesn't proxy `/images`, so relative URLs 404 in the dev SPA); prod uses `https://api.tokkishopve.com`. A wrong value here doesn't break uploads — files save fine, but every image 404s in the browser |
 
-Setup: `pnpm install` → create `.env` → `psql "$DATABASE_URL" -f src/schema/tokki_schema.sql` → `pnpm dev`.
+Setup: `pnpm install` → create `.env` → `psql "$DATABASE_URL" -f src/schema/tokki_schema.sql` → `pnpm dev`. Existing deployments upgrading an already-initialized database must also apply the dated migrations in `src/schema/migrations/` (each file carries its own pre/post-deploy runbook — see `2026-11-13-product-gallery.sql`).
 
 Commands: `pnpm dev` (watch), `pnpm test` (Jest, ESM via `--experimental-vm-modules`), `pnpm start`.
 
@@ -77,10 +77,10 @@ Primary client identifier (`clients.cedula VARCHAR(12) UNIQUE NOT NULL`). Always
 `orders.delivery_type` is enforced at both layers: the controller rejects anything outside `['envio_nacional', 'delivery', 'retiro_tienda']` with 400, and a DB CHECK constraint (`orders_delivery_type_check`, added `NOT VALID` so legacy rows survive) backstops it. The API stores/returns **slugs only**; accented display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") are a frontend concern (`DELIVERY_TYPES` in `src/constants/index.ts`). Keep the two lists in sync manually — same discipline as categories.
 
 ### Images
-Product images live on disk under `UPLOAD_DIR`, one WebP per product: UUID keys shaped `products/<uuid>.webp` (sharp-normalized ≤1600px, q82). The DB stores **the key only** (`products.product_image`) — never store absolute URLs; responses compose `product_image_url` at response time via `toPublicImageUrl`/`attachImageUrls`. Uploads go through `uploadImage` (`src/middleware/upload.js`): memory storage, 5 MB cap, declared-mime allowlist **plus magic-byte sniff** (headers are spoofable), and every `400` rejection is logged server-side (`[upload] rejected: {reason, ...}` — `createUploadImage(logger)` factory, injectable for tests). File lifecycle discipline: save file → transactional DB update → cleanup on failure; a replaced/archived image's file is deleted only after its commit succeeds (best-effort unlink, log-and-continue). Removing an image (`clearProductImage`, `DELETE /api/products/:id/image`) is idempotent — no image set → success no-op. Static serving: `/images` mounts `UPLOAD_DIR` in `src/app.js` with 7-day immutable cache — safe because keys are content-immutable UUIDs.
+Product images live on disk under `UPLOAD_DIR` as WebP files with content-immutable UUID keys shaped `products/<uuid>.webp` (sharp-normalized ≤1600px, q82). The DB stores **keys only** in `tokki_shop.product_images` (`image_key` + `sort_order` 0–4; max 5 per product, `UNIQUE (product_id, sort_order)` makes sort_order 0 the cover/portada) — never store absolute URLs; responses compose `product_image_urls` (ordered array, index 0 = cover) plus the legacy alias `product_image_url = product_image_urls[0] ?? null` at response time via `attachImageUrls`. Uploads go through `uploadImage` (`src/middleware/upload.js`): memory storage, 5 MB cap, declared-mime allowlist **plus magic-byte sniff** (headers are spoofable), and every `400` rejection is logged server-side (`[upload] rejected: {reason, ...}` — `createUploadImage(logger)` factory, injectable for tests). Gallery mutations live in `src/routes/products.js` + `src/controllers/c_products.js`: `POST /:product_id/images` appends one image (`409` at 5 — pre-checked and re-enforced by the DB CHECK + unique constraint against concurrent races), `DELETE /:product_id/images?url=` removes by URL and reindexes so no sort gaps remain, and `PUT /:product_id/images/order` reorders from a `{ urls }` body (must match the current set exactly; first URL = cover). The legacy single-image endpoints (`POST`/`DELETE /:product_id/image` — replace/clear the cover) are kept for already-deployed frontends. File lifecycle discipline: save file → transactional DB write → cleanup on failure; a removed/replaced/archived image's file is deleted only after its commit succeeds (best-effort unlink, log-and-continue). Removing the cover is idempotent — empty gallery → success no-op. Archiving a product deletes its gallery rows and all stored files post-commit. Static serving: `/images` mounts `UPLOAD_DIR` in `src/app.js` with 7-day immutable cache — safe because keys are content-immutable UUIDs.
 
 ### Versioning
-The backend is pre-deploy: versions live in `0.x.y` (features/behavior changes bump `x`, fixes/docs bump `y`). `1.0.0` = first production deployment — never jump to `1.x` before that. The version appears in `API_CONTRACT.md` and `package.json`; keep the two in sync on every bump.
+The backend went live in production on **2026-11-13** at `0.10.0` (that release shipped the multi-image product gallery). Versions stay in `0.x.y` (features/behavior changes bump `x`, fixes/docs bump `y`); a version-policy decision (e.g. moving to `1.x`) is pending owner approval. The version appears in `API_CONTRACT.md` and `package.json`; keep the two in sync on every bump.
 
 ### Code style
 ES Modules everywhere (`import`/`export`). Controllers hold SQL inline as template literals with `$1` params — no ORM, no query builder by design (Level 2 architecture). No comments-heavy style; match existing naming (`c_orders.js`, `c_products.js`). No linter is configured yet.
@@ -114,16 +114,17 @@ src/config/db.js           pool adapter: query() / getClient()
 src/middleware/auth.js     requireAdmin (Clerk role check) + users-table upsert helper
 src/middleware/upload.js   product-image upload gate: multer memory + mime/magic-byte validation
 src/routes/index.js        mounts /products, /orders
-src/routes/products.js     product routes
+src/routes/products.js     product routes (CRUD + gallery images: add / remove-by-URL / reorder + legacy cover endpoints)
 src/routes/orders.js       order routes (incl. /receipt/:order_token, /client/:id, /:id/cancel, /:id/approve)
-src/controllers/c_products.js   catalog CRUD + soft delete + image upload orchestration (applyProductImage)
+src/controllers/c_products.js   catalog CRUD + soft delete + image gallery orchestration (addProductImage / removeProductImageByUrl / replaceCoverImage / clearCoverImage / reorderProductImages)
 src/controllers/c_orders.js     checkout single transaction (cedula lookup/upsert, clients_p_number sync, stock lock, order header & items), receipt & listing queries, lifecycle transitions
 src/utils/validate.js      phone (E.164) + cedula normalization
 src/utils/clientSync.js    syncClientAndPhone helper (pure DI testable client & phone upsert)
 src/utils/orderReceipt.js  fetchOrderReceipt helper (pure DI testable public receipt resolver)
 src/utils/productValidation.js  strict field-type validators (products create/patch, order items)
 src/utils/params.js        parseIdParam (integer IDs) + parseUuidParam (UUIDv4 tokens)
-src/utils/storage.js       image storage: saveProductImage / deleteProductImage / cleanupProductImages / attachImageUrls / toPublicImageUrl
-src/schema/tokki_schema.sql authoritative DDL (schema tokki_shop: clients, clients_p_number, users, orders, products, order_items)
-tests/                     unit tests: validate, product-validation, storage, upload, product-image, image-cleanup, params, client-sync, orders, order-receipt, health, rate-limit (125 tests across 12 suites)
+src/utils/storage.js       image storage: saveProductImage / deleteProductImage / cleanupProductImages / attachImageUrls / toPublicImageUrl / toImageKey (URL→image_key resolution used by remove-by-URL & reorder) / resolveUploadDir
+src/schema/tokki_schema.sql authoritative DDL (schema tokki_shop: clients, clients_p_number, users, orders, products, product_images, order_items)
+src/schema/migrations/      dated SQL migrations, each with its own runbook (2026-11-13-product-gallery.sql: STEP 1/1b pre-deploy, STEP 2 post-deploy)
+tests/                     unit tests: validate, product-validation, storage, upload, product-image, image-cleanup, params, client-sync, orders, order-receipt, health, rate-limit (153 tests across 12 suites)
 ```

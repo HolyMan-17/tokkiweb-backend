@@ -23,7 +23,11 @@ PostgreSQL, Express.js and Node.JS backend for the Tokki online store.
 | `POST /api/products` | Create product |
 | `PATCH /api/products/:product_id` | Partial product update |
 | `DELETE /api/products/:product_id` | Soft-delete (archive) product |
-| `POST /api/products/:product_id/image` | Upload/replace product image (multipart, WebP-normalized) |
+| `POST /api/products/:product_id/images` | Add a gallery image (multipart, max 5 per product, WebP-normalized) |
+| `DELETE /api/products/:product_id/images?url=` | Remove a gallery image by URL |
+| `PUT /api/products/:product_id/images/order` | Reorder gallery / set cover (`{ urls }`, first URL = cover) |
+| `POST /api/products/:product_id/image` | Legacy: upload/replace the cover image (multipart, WebP-normalized) |
+| `DELETE /api/products/:product_id/image` | Legacy: remove the cover image |
 | `POST /api/orders` | Checkout: find/create client, lock & deduct stock, create order |
 | `GET /api/orders/receipt/:order_token` | Public order receipt by unguessable UUID token |
 | `GET /api/orders` | Dashboard list of all orders (admin) |
@@ -33,13 +37,13 @@ PostgreSQL, Express.js and Node.JS backend for the Tokki online store.
 | `PATCH /api/orders/:order_id/approve` | Approve a pending order (admin) |
 
 **Public:** catalog reads (`GET /api/products*`), guest checkout (`POST /api/orders`), secure order receipt (`GET /api/orders/receipt/:order_token`).
-**Admin-only:** product mutations (create/update/archive/images), orders dashboard (`GET /api/orders`), order full details (`GET /api/orders/:order_id`), client history, cancel/approve — requires a Clerk session with `publicMetadata.role` of `owner` or `tech`.
+**Admin-only:** product mutations (create/update/archive/gallery images), orders dashboard (`GET /api/orders`), order full details (`GET /api/orders/:order_id`), client history, cancel/approve — requires a Clerk session with `publicMetadata.role` of `owner` or `tech`.
 
 ## Docs
 - [`API_CONTRACT.md`](API_CONTRACT.md) — request/response contracts for every endpoint
 - [`PROJECT_SUMMARY_AND_PLAN.md`](PROJECT_SUMMARY_AND_PLAN.md) — architecture decisions, DB schema, implemented behavior
 - [`ROADMAP.md`](ROADMAP.md) — prioritized backlog of known gaps and next features
-- [`PRODUCTION_DEPLOYMENT_ROADMAP.md`](PRODUCTION_DEPLOYMENT_ROADMAP.md) — step-by-step production setup, Nginx/PM2, and security hardening
+- [`PRODUCTION_DEPLOYMENT_ROADMAP.md`](PRODUCTION_DEPLOYMENT_ROADMAP.md) — step-by-step production setup (Nginx/systemd), deploy-day record, and security hardening
 - [`CONTEXT.md`](CONTEXT.md) — project context & conventions for agents/contributors
 
 ## Getting started
@@ -54,6 +58,7 @@ To initialize the database:
 ```bash
 psql "$DATABASE_URL" -f src/schema/tokki_schema.sql
 ```
+Existing deployments upgrading an already-initialized database must also apply the dated migrations in `src/schema/migrations/` (each file documents its own pre/post-deploy steps).
 
 ## Scripts
 - `pnpm dev` — run with file watching

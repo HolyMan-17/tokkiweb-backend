@@ -1,8 +1,8 @@
 # Tokki Shop Backend API Contract
 
-> **Versioning policy:** the backend has not shipped yet — versions stay in `0.x.y`. Features/behavior changes bump `x`, fixes/docs bump `y`. `1.0.0` is reserved for the first production deployment.
+> **Versioning policy:** versions stay in `0.x.y` (features/behavior changes bump `x`, fixes/docs bump `y`). The first production deployment went live **2026-11-13** at `0.10.0`; a version-policy decision (e.g. moving to `1.x`) is pending owner approval.
 
-**Version:** 0.10.0 *(pre-deploy — see versioning policy below)*  
+**Version:** 0.10.0 *(in production since 2026-11-13 — see versioning policy above)*  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
 **Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders` (guest checkout) + `GET /api/orders/receipt/:order_token` (secure order confirmation receipt). Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
@@ -226,7 +226,7 @@ Updates specific details of an existing product. If `qty_available` is modified,
   "message": "At least 1 product field needs to be updated."
 }
 ```
-Provided fields are type-validated before any DB access: `"product_price must be a positive number."`, `"Product quantity must be a whole number."`, `"Product quantity can't be negative."`, `"A valid product category is required."`. Invalid values are rejected — never silently ignored.
+Provided fields are type-validated before any DB access: `"product_name must be a non-empty string."`, `"product_description must be a non-empty string."`, `"product_price must be a positive number."`, `"Product quantity must be a whole number."`, `"Product quantity can't be negative."`, `"A valid product category is required."`. Invalid values are rejected — never silently ignored.
 
 #### Response `404 Not Found`
 Product does not exist:
@@ -401,7 +401,7 @@ Kept for already-deployed frontends; the current SPA should prefer §1.6–§1.8
 * **`POST /api/products/:product_id/image`** — multipart `image` field, same middleware constraints as §1.6. Semantics: **replace the cover** — the new file takes index 0 (inserted if the gallery is empty, overwriting the cover key otherwise); other gallery images keep their positions. The replaced cover file is deleted only after the commit succeeds. Rate-limited like §1.6.
 * **`DELETE /api/products/:product_id/image`** — **remove the cover** (and delete its file after commit). Idempotent no-op when the gallery is empty. Reindexes the remaining images.
 
-Both respond with the same `data` shape as §1.6–§1.8 (`product_id`, `product_image_urls`, `product_image_url`). Error contracts mirror §1.6/§1.7.
+Both respond with the same `data` shape as §1.6–§1.8 (`product_id`, `product_image_urls`, `product_image_url`). Errors: `400` (multipart/type violations, as §1.6) and `404` (`"Product was not found."` / `"Product is archived."`). The legacy `POST` has **no 409 path** — cover replacement is an upsert (`ON CONFLICT DO UPDATE`) and is not subject to the 5-image cap check.
 
 ---
 
