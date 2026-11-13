@@ -22,7 +22,7 @@ Backend API for the **Tokki Shop** storefront: a product catalog with guest chec
 | `CLERK_PUBLISHABLE_KEY` | Clerk publishable key (`pk_test_...`) — also required by `clerkMiddleware()` server-side (SDK builds auth context from it); safe to expose, same value the frontend holds |
 | `FRONTEND_ORIGINS` | Comma-separated CORS allowlist (default `http://localhost:5173`) |
 | `UPLOAD_DIR` | Root folder for stored product images (default `./uploads`; served at `/images`, gitignored) |
-| `PUBLIC_BASE_URL` | Base URL used to compose absolute `product_image_url`s (e.g. `http://localhost:3000`); empty → relative URLs |
+| `PUBLIC_BASE_URL` | Base URL used to compose absolute `product_image_url`s (e.g. `http://localhost:3000`); empty → relative URLs. Local dev **must** set it to `http://localhost:3000` (Vite doesn't proxy `/images`, so relative URLs 404 in the dev SPA); prod uses `https://api.tokkishopve.com`. A wrong value here doesn't break uploads — files save fine, but every image 404s in the browser |
 
 Setup: `pnpm install` → create `.env` → `psql "$DATABASE_URL" -f src/schema/tokki_schema.sql` → `pnpm dev`.
 
@@ -77,7 +77,7 @@ Primary client identifier (`clients.cedula VARCHAR(12) UNIQUE NOT NULL`). Always
 `orders.delivery_type` is enforced at both layers: the controller rejects anything outside `['envio_nacional', 'delivery', 'retiro_tienda']` with 400, and a DB CHECK constraint (`orders_delivery_type_check`, added `NOT VALID` so legacy rows survive) backstops it. The API stores/returns **slugs only**; accented display labels ("Envío Nacional", "Delivery", "Retiro en Tienda") are a frontend concern (`DELIVERY_TYPES` in `src/constants/index.ts`). Keep the two lists in sync manually — same discipline as categories.
 
 ### Images
-Product images live on disk under `UPLOAD_DIR`, one WebP per product: UUID keys shaped `products/<uuid>.webp` (sharp-normalized ≤1600px, q82). The DB stores **the key only** (`products.product_image`) — never store absolute URLs; responses compose `product_image_url` at response time via `toPublicImageUrl`/`attachImageUrls`. Uploads go through `uploadImage` (`src/middleware/upload.js`): memory storage, 5 MB cap, declared-mime allowlist **plus magic-byte sniff** (headers are spoofable). File lifecycle discipline: save file → transactional DB update → cleanup on failure; a replaced/archived image's file is deleted only after its commit succeeds (best-effort unlink, log-and-continue). Removing an image (`clearProductImage`, `DELETE /api/products/:id/image`) is idempotent — no image set → success no-op. Static serving: `/images` mounts `UPLOAD_DIR` in `src/app.js` with 7-day immutable cache — safe because keys are content-immutable UUIDs.
+Product images live on disk under `UPLOAD_DIR`, one WebP per product: UUID keys shaped `products/<uuid>.webp` (sharp-normalized ≤1600px, q82). The DB stores **the key only** (`products.product_image`) — never store absolute URLs; responses compose `product_image_url` at response time via `toPublicImageUrl`/`attachImageUrls`. Uploads go through `uploadImage` (`src/middleware/upload.js`): memory storage, 5 MB cap, declared-mime allowlist **plus magic-byte sniff** (headers are spoofable), and every `400` rejection is logged server-side (`[upload] rejected: {reason, ...}` — `createUploadImage(logger)` factory, injectable for tests). File lifecycle discipline: save file → transactional DB update → cleanup on failure; a replaced/archived image's file is deleted only after its commit succeeds (best-effort unlink, log-and-continue). Removing an image (`clearProductImage`, `DELETE /api/products/:id/image`) is idempotent — no image set → success no-op. Static serving: `/images` mounts `UPLOAD_DIR` in `src/app.js` with 7-day immutable cache — safe because keys are content-immutable UUIDs.
 
 ### Versioning
 The backend is pre-deploy: versions live in `0.x.y` (features/behavior changes bump `x`, fixes/docs bump `y`). `1.0.0` = first production deployment — never jump to `1.x` before that. The version appears in `API_CONTRACT.md` and `package.json`; keep the two in sync on every bump.
@@ -94,13 +94,14 @@ Unit tests live in `tests/*.test.js` (Jest, ESM via `--experimental-vm-modules`)
 ## Gotchas & known quirks
 
 1. **Docs drift fast** — this repo's docs were written alongside features; if code and contract disagree, check git history and fix the doc in the same PR.
-2. Field types are validated up front by `src/utils/productValidation.js` — invalid `product_price`/`qty_available` reject with 400 instead of reaching SQL or being silently ignored.
-3. Express-generator leftovers were removed from `package.json` (Aug 2026); `pnpm-workspace.yaml` no longer needs argon2/bcrypt build approvals.
-4. `server.js` runs a startup DB ping before listening — if tests ever import it, they'll need a live DB. Import `src/app.js` for supertest instead.
-5. `.gitignore` excludes `.agents/` and `plans/` — scratch/planning artifacts go there; tracked docs stay at root.
-6. Schema changes: edit `src/schema/tokki_schema.sql` (it's `CREATE ... IF NOT EXISTS`, idempotent migrations at bottom). Keep `PROJECT_SUMMARY_AND_PLAN.md` §3 in sync when tables change.
-7. `orders.processed_by` is populated on cancel/approve via lazy upsert of the acting admin (`src/middleware/auth.js`). Older orders keep NULL.
-8. Server watch mode: always run `pnpm dev` (`node --watch server.js`) during active development so in-memory code automatically reflects edits.
+2. **Nginx `client_max_body_size` is load-bearing for uploads** — the production SPA calls the API same-origin (`www.tokkishopve.com/api/...`, `VITE_API_URL` unset at build → `/api` fallback), and that request is proxied by the *frontend's* server block (`tokkishop-frontend.conf` → `127.0.0.1:3000`), not the `api.tokkishopve.com` block. Without `client_max_body_size 6M;` there, nginx's 1 MB default 413s any upload >1 MB before Node sees it (surfaced client-side as a generic network error). Diagnosed Nov 2026 via "product saved without picture" reports; the backend's own 5 MB cap must stay ≤ every proxy cap on the path.
+3. Field types are validated up front by `src/utils/productValidation.js` — invalid `product_price`/`qty_available` reject with 400 instead of reaching SQL or being silently ignored.
+4. Express-generator leftovers were removed from `package.json` (Aug 2026); `pnpm-workspace.yaml` no longer needs argon2/bcrypt build approvals.
+5. `server.js` runs a startup DB ping before listening — if tests ever import it, they'll need a live DB. Import `src/app.js` for supertest instead. `server.requestTimeout` is raised to 10 min so slow mobile uploads aren't killed mid-body by Node's 300 s default.
+6. `.gitignore` excludes `.agents/` and `plans/` — scratch/planning artifacts go there; tracked docs stay at root.
+7. Schema changes: edit `src/schema/tokki_schema.sql` (it's `CREATE ... IF NOT EXISTS`, idempotent migrations at bottom). Keep `PROJECT_SUMMARY_AND_PLAN.md` §3 in sync when tables change.
+8. `orders.processed_by` is populated on cancel/approve via lazy upsert of the acting admin (`src/middleware/auth.js`). Older orders keep NULL.
+9. Server watch mode: always run `pnpm dev` (`node --watch server.js`) during active development so in-memory code automatically reflects edits.
 
 ---
 
@@ -124,5 +125,5 @@ src/utils/productValidation.js  strict field-type validators (products create/pa
 src/utils/params.js        parseIdParam (integer IDs) + parseUuidParam (UUIDv4 tokens)
 src/utils/storage.js       image storage: saveProductImage / deleteProductImage / cleanupProductImages / attachImageUrls / toPublicImageUrl
 src/schema/tokki_schema.sql authoritative DDL (schema tokki_shop: clients, clients_p_number, users, orders, products, order_items)
-tests/                     unit tests: validate, product-validation, storage, upload, product-image, image-cleanup, params, client-sync, orders, order-receipt (116 tests across 10 suites)
+tests/                     unit tests: validate, product-validation, storage, upload, product-image, image-cleanup, params, client-sync, orders, order-receipt, health, rate-limit (125 tests across 12 suites)
 ```

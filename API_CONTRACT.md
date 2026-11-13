@@ -2,7 +2,7 @@
 
 > **Versioning policy:** the backend has not shipped yet — versions stay in `0.x.y`. Features/behavior changes bump `x`, fixes/docs bump `y`. `1.0.0` is reserved for the first production deployment.
 
-**Version:** 0.9.1 *(pre-deploy — see versioning policy below)*  
+**Version:** 0.9.2 *(pre-deploy — see versioning policy below)*  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
 **Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders` (guest checkout) + `GET /api/orders/receipt/:order_token` (secure order confirmation receipt). Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
@@ -293,6 +293,8 @@ Stores a product image: normalizes it to WebP (max width 1600px, quality 82), wr
 
 #### Response `400 Bad Request`
 Any of: no file part (`"No image file was uploaded."`); file under an unexpected field name (`"Unexpected upload field: <field>. Use the \"image\" field."`); size over 5 MB (`"Image exceeds the 5 MB size limit."`); disallowed declared type (`"Unsupported image type. Allowed: jpeg, png, webp."`); bytes that are not a supported image (`"File content is not a supported image (jpeg, png, webp)."`).
+
+Every `400` above is logged server-side (`[upload] rejected: { reason, code?, field?, mimetype?, filename?, size?, message }`) for diagnosing client-side upload failures.
 
 #### Response `404 Not Found`
 Same as §1.4 — `"Product was not found."` (missing) or `"Product is archived."`.

@@ -1,8 +1,9 @@
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, jest, test } from '@jest/globals';
 import { Readable } from 'node:stream';
 import sharp from 'sharp';
 import {
     uploadImage,
+    createUploadImage,
     isSupportedImageBuffer,
     translateUploadError,
     MAX_IMAGE_BYTES
@@ -53,7 +54,9 @@ const makeRequest = ({ body, headers }) => Object.assign(Readable.from([body]), 
     method: 'POST'
 });
 
-const runUpload = (req) => new Promise((resolve) => {
+const runUpload = (req) => runThrough(uploadImage, req);
+
+const runThrough = (middleware, req) => new Promise((resolve) => {
     const res = {
         statusCode: null,
         status(code) {
@@ -64,7 +67,7 @@ const runUpload = (req) => new Promise((resolve) => {
             resolve({ nextCalled: false, statusCode: this.statusCode, body: payload });
         }
     };
-    uploadImage(req, res, () => resolve({ nextCalled: true, req }));
+    middleware(req, res, () => resolve({ nextCalled: true, req }));
 });
 
 describe('isSupportedImageBuffer (magic-byte sniffing)', () => {
@@ -168,5 +171,89 @@ describe('translateUploadError', () => {
 
     test('falls back to the error message for unknown codes', () => {
         expect(translateUploadError({ code: 'LIMIT_WHATEVER', message: 'boom' })).toBe('boom');
+    });
+});
+
+describe('createUploadImage (rejection logging factory)', () => {
+    test('is exported and returns a callable middleware', () => {
+        expect(typeof createUploadImage).toBe('function');
+        const middleware = createUploadImage(jest.fn());
+        expect(typeof middleware).toBe('function');
+    });
+
+    test('passes valid uploads through without logging', async () => {
+        const logger = jest.fn();
+        const middleware = createUploadImage(logger);
+        const png = await makeImage('png');
+        const result = await runThrough(middleware, makeRequest(buildMultipart({ fileBuffer: png })));
+
+        expect(result.nextCalled).toBe(true);
+        expect(logger).not.toHaveBeenCalled();
+    });
+
+    test('logs size-limit rejections with declared mime and size', async () => {
+        const logger = jest.fn();
+        const middleware = createUploadImage(logger);
+        const tooBig = Buffer.alloc(MAX_IMAGE_BYTES + 1024, 7);
+        const result = await runThrough(middleware, makeRequest(buildMultipart({ fileBuffer: tooBig })));
+
+        expect(result.nextCalled).toBe(false);
+        expect(result.statusCode).toBe(400);
+        expect(logger).toHaveBeenCalledTimes(1);
+        expect(logger).toHaveBeenCalledWith(expect.objectContaining({
+            reason: 'size_limit',
+            message: expect.stringMatching(/size limit/i)
+        }));
+    });
+
+    test('logs no-file rejections', async () => {
+        const logger = jest.fn();
+        const middleware = createUploadImage(logger);
+        const result = await runThrough(middleware, makeRequest(buildTextFieldOnly()));
+
+        expect(result.nextCalled).toBe(false);
+        expect(logger).toHaveBeenCalledTimes(1);
+        expect(logger).toHaveBeenCalledWith(expect.objectContaining({ reason: 'no_file' }));
+    });
+
+    test('logs unexpected-field rejections and names the field', async () => {
+        const logger = jest.fn();
+        const middleware = createUploadImage(logger);
+        const png = await makeImage('png');
+        await runThrough(middleware, makeRequest(buildMultipart({ fieldName: 'photo', fileBuffer: png })));
+
+        expect(logger).toHaveBeenCalledTimes(1);
+        expect(logger).toHaveBeenCalledWith(expect.objectContaining({
+            reason: 'unexpected_field',
+            field: 'photo'
+        }));
+    });
+
+    test('logs unsupported declared mimetype rejections', async () => {
+        const logger = jest.fn();
+        const middleware = createUploadImage(logger);
+        const pdfBytes = Buffer.from('%PDF-1.4 fake pdf content');
+        await runThrough(middleware, makeRequest(buildMultipart({ contentType: 'application/pdf', filename: 'doc.pdf', fileBuffer: pdfBytes })));
+
+        expect(logger).toHaveBeenCalledTimes(1);
+        expect(logger).toHaveBeenCalledWith(expect.objectContaining({
+            reason: 'unsupported_type',
+            mimetype: 'application/pdf',
+            filename: 'doc.pdf'
+        }));
+    });
+
+    test('logs spoofed-content rejections', async () => {
+        const logger = jest.fn();
+        const middleware = createUploadImage(logger);
+        const textBytes = Buffer.from('definitely not an image despite the header');
+        await runThrough(middleware, makeRequest(buildMultipart({ contentType: 'image/jpeg', filename: 'evil.jpg', fileBuffer: textBytes })));
+
+        expect(logger).toHaveBeenCalledTimes(1);
+        expect(logger).toHaveBeenCalledWith(expect.objectContaining({
+            reason: 'unsupported_content',
+            mimetype: 'image/jpeg',
+            filename: 'evil.jpg'
+        }));
     });
 });

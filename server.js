@@ -16,6 +16,10 @@ db.query('SELECT NOW()')
         server = app.listen(PORT, () => {
             console.log(`Server running on port ${PORT} [NODE_ENV=${process.env.NODE_ENV || 'development'}]`);
         });
+        // Default is 300s (Node 18+); a 5 MB upload over a slow mobile link can
+        // exceed it, killing the request mid-body (413-style symptoms surface
+        // client-side as a generic network error).
+        server.requestTimeout = 10 * 60 * 1000;
     })
     .catch((err) => {
         console.error('Database connection failed. Server shutting down...', err.stack);
