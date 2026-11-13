@@ -11,6 +11,11 @@ router.get('/:product_id', productsController.getProduct);
 router.post('/', requireAdmin, productsController.createProduct);
 router.patch('/:product_id', requireAdmin, productsController.updateProductDetails);
 router.delete('/:product_id', requireAdmin, productsController.deleteProduct);
+router.post('/:product_id/images', uploadLimiter, requireAdmin, uploadImage, productsController.addProductImage);
+router.delete('/:product_id/images', requireAdmin, productsController.removeProductImageByUrl);
+router.put('/:product_id/images/order', requireAdmin, productsController.reorderProductImages);
+// Legacy single-image endpoints (kept for already-deployed frontends):
+// POST replaces the cover, DELETE removes the cover.
 router.post('/:product_id/image', uploadLimiter, requireAdmin, uploadImage, productsController.setProductImage);
 router.delete('/:product_id/image', requireAdmin, productsController.removeProductImage);
 

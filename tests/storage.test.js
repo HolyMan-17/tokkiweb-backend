@@ -7,6 +7,7 @@ import {
     saveProductImage,
     deleteProductImage,
     toPublicImageUrl,
+    toImageKey,
     attachImageUrls
 } from '../src/utils/storage.js';
 
@@ -157,42 +158,94 @@ describe('attachImageUrls', () => {
         }
     });
 
-    test('maps an array of rows: strips the raw key and adds the public url', () => {
+    test('maps gallery keys into an ordered url list with the cover first', () => {
+        const row = {
+            product_id: 1,
+            product_name: 'A',
+            image_keys: ['products/k1.webp', 'products/k2.webp']
+        };
+
+        const result = attachImageUrls(row);
+
+        expect(result).toEqual({
+            product_id: 1,
+            product_name: 'A',
+            product_image_urls: [
+                'http://localhost:3000/images/products/k1.webp',
+                'http://localhost:3000/images/products/k2.webp'
+            ],
+            product_image_url: 'http://localhost:3000/images/products/k1.webp'
+        });
+    });
+
+    test('maps arrays of rows: strips the raw keys and adds the public urls', () => {
         const rows = [
-            { product_id: 1, product_name: 'A', product_image: 'products/k1.webp' },
-            { product_id: 2, product_name: 'B', product_image: null },
+            { product_id: 1, product_name: 'A', image_keys: ['products/k1.webp'] },
+            { product_id: 2, product_name: 'B', image_keys: [] },
             { product_id: 3, product_name: 'C' }
         ];
 
         const result = attachImageUrls(rows);
 
         expect(result).toEqual([
-            { product_id: 1, product_name: 'A', product_image_url: 'http://localhost:3000/images/products/k1.webp' },
-            { product_id: 2, product_name: 'B', product_image_url: null },
-            { product_id: 3, product_name: 'C', product_image_url: null }
+            {
+                product_id: 1,
+                product_name: 'A',
+                product_image_urls: ['http://localhost:3000/images/products/k1.webp'],
+                product_image_url: 'http://localhost:3000/images/products/k1.webp'
+            },
+            { product_id: 2, product_name: 'B', product_image_urls: [], product_image_url: null },
+            { product_id: 3, product_name: 'C', product_image_urls: [], product_image_url: null }
         ]);
     });
 
-    test('accepts a single row object', () => {
+    test('falls back to the legacy single key column when image_keys is absent', () => {
         const result = attachImageUrls({ product_id: 9, product_image: 'products/k2.webp' });
 
         expect(result).toEqual({
             product_id: 9,
+            product_image_urls: ['http://localhost:3000/images/products/k2.webp'],
             product_image_url: 'http://localhost:3000/images/products/k2.webp'
         });
     });
 
     test('does not mutate the input row', () => {
-        const row = { product_id: 5, product_image: 'products/k3.webp' };
+        const row = { product_id: 5, image_keys: ['products/k3.webp'] };
 
         attachImageUrls(row);
 
-        expect(row.product_image).toBe('products/k3.webp');
+        expect(row.image_keys).toEqual(['products/k3.webp']);
+        expect(row.product_image_urls).toBeUndefined();
         expect(row.product_image_url).toBeUndefined();
     });
 
     test('returns null for null input and [] for empty arrays', () => {
         expect(attachImageUrls(null)).toBeNull();
         expect(attachImageUrls([])).toEqual([]);
+    });
+});
+
+describe('toImageKey', () => {
+    test('resolves the storage key from an absolute public URL', () => {
+        expect(toImageKey('http://localhost:3000/images/products/2a5a2660-bc5c-4a77-913a-823fc546f7e4.webp'))
+            .toBe('products/2a5a2660-bc5c-4a77-913a-823fc546f7e4.webp');
+    });
+
+    test('resolves the storage key from a relative /images/ URL', () => {
+        expect(toImageKey('/images/products/2a5a2660-bc5c-4a77-913a-823fc546f7e4.webp'))
+            .toBe('products/2a5a2660-bc5c-4a77-913a-823fc546f7e4.webp');
+    });
+
+    test('returns null for URLs outside the products/ webp namespace', () => {
+        expect(toImageKey('http://localhost:3000/images/others/foo.webp')).toBeNull();
+        expect(toImageKey('http://localhost:3000/images/products/notes.txt')).toBeNull();
+        expect(toImageKey('http://localhost:3000/images/products/not-a-uuid.webp')).toBeNull();
+        expect(toImageKey('http://evil.com/whatever')).toBeNull();
+    });
+
+    test('returns null for non-string input', () => {
+        expect(toImageKey(null)).toBeNull();
+        expect(toImageKey(undefined)).toBeNull();
+        expect(toImageKey(12345)).toBeNull();
     });
 });

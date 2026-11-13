@@ -6,6 +6,7 @@ import path from 'node:path';
 const MAX_WIDTH = 1600;
 const WEBP_QUALITY = 82;
 const KEY_PATTERN = /^products\/[0-9a-f-]{36}\.webp$/;
+const IMAGE_URL_PATTERN = /\/images\/(products\/[0-9a-f-]{36}\.webp)$/;
 
 export const resolveUploadDir = (override) =>
     path.resolve(override ?? process.env.UPLOAD_DIR ?? './uploads');
@@ -52,12 +53,27 @@ export const toPublicImageUrl = (key) => {
     return `${base}/images/${key}`;
 };
 
-const withImageUrl = (row) => {
+export const toImageKey = (url) => {
+    if (typeof url !== 'string'){
+        return null;
+    }
+    const match = url.match(IMAGE_URL_PATTERN);
+    return match ? match[1] : null;
+};
+
+const withImageUrls = (row) => {
     if (!row || typeof row !== 'object'){
         return row;
     }
-    const { product_image, ...rest } = row;
-    return { ...rest, product_image_url: toPublicImageUrl(product_image) };
+    const { product_image, image_keys, ...rest } = row;
+    const keys = Array.isArray(image_keys) && image_keys.length > 0
+        ? image_keys
+        : (product_image ? [product_image] : []);
+    return {
+        ...rest,
+        product_image_urls: keys.map(toPublicImageUrl),
+        product_image_url: toPublicImageUrl(keys[0] ?? null)
+    };
 };
 
 export const attachImageUrls = (rows) => {
@@ -65,9 +81,9 @@ export const attachImageUrls = (rows) => {
         return rows;
     }
     if (Array.isArray(rows)){
-        return rows.map(withImageUrl);
+        return rows.map(withImageUrls);
     }
-    return withImageUrl(rows);
+    return withImageUrls(rows);
 };
 
 export const cleanupProductImages = async (keys, removeFile) => {

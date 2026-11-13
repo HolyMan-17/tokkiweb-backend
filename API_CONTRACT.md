@@ -2,7 +2,7 @@
 
 > **Versioning policy:** the backend has not shipped yet — versions stay in `0.x.y`. Features/behavior changes bump `x`, fixes/docs bump `y`. `1.0.0` is reserved for the first production deployment.
 
-**Version:** 0.9.2 *(pre-deploy — see versioning policy below)*  
+**Version:** 0.10.0 *(pre-deploy — see versioning policy below)*  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
 **Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders` (guest checkout) + `GET /api/orders/receipt/:order_token` (secure order confirmation receipt). Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
@@ -67,11 +67,17 @@ Retrieves all non-archived products available in the store catalog.
       "category": "Ropa",
       "qty_available": 25,
       "in_stock": true,
+      "product_image_urls": [
+        "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp",
+        "http://localhost:3000/images/products/b2d1f3a2-8c44-4f1e-9a7b-5f6e2d3c4b5a.webp"
+      ],
       "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
     }
   ]
 }
 ```
+
+> **Gallery semantics (all product reads):** `product_image_urls` is the ordered gallery (max 5); index 0 is the **cover** (portada) shown on cards, grids, and Open Graph previews. `product_image_url` is kept as a convenience alias equal to `product_image_urls[0] ?? null`.
 
 #### Response `200 OK` (empty catalog)
 ```json
@@ -104,6 +110,9 @@ Retrieves details for a specific active product by its ID.
     "category": "Ropa",
     "qty_available": 25,
     "in_stock": true,
+    "product_image_urls": [
+      "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
+    ],
     "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
   }
 }
@@ -152,12 +161,13 @@ Adds a new product to the catalog. Automatically calculates `in_stock = true` if
     "qty_available": 50,
     "in_stock": true,
     "is_archived": false,
+    "product_image_urls": [],
     "product_image_url": null
   }
 }
 ```
 
-**Note:** new products start without an image (`product_image_url: null`); upload one via [§1.6](#16-upload--replace-product-image).
+**Note:** new products start without images (`product_image_urls: []`, `product_image_url: null`); upload them via [§1.6](#16-add-a-gallery-image-max-5).
 
 #### Response `400 Bad Request`
 ```json
@@ -199,13 +209,15 @@ Updates specific details of an existing product. If `qty_available` is modified,
     "category": "Ropa",
     "qty_available": 10,
     "in_stock": true,
+    "product_image_urls": [
+      "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
+    ],
     "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
   }
 }
 ```
 
-**Note:** this endpoint never changes the image — uploads go through [§1.6](#16-upload--replace-product-image).
-```
+**Note:** this endpoint never changes images — uploads go through [§1.6](#16-add-a-gallery-image-max-5).
 
 #### Response `400 Bad Request`
 ```json
@@ -260,24 +272,27 @@ Archives a product by setting `is_archived = true`, `qty_available = 0`, and `in
 
 ---
 
-### 1.6 Upload / Replace Product Image
-Stores a product image: normalizes it to WebP (max width 1600px, quality 82), writes the file under `UPLOAD_DIR` with a content-immutable UUID key (`products/<uuid>.webp`), and persists **the key only** in `products.product_image` inside a transaction. Re-uploading generates a new key and deletes the replaced file only after the commit succeeds.
+### 1.6 Add a Gallery Image (max 5)
+
+Appends one image to the product's gallery. The image is normalized to WebP (max width 1600px, quality 82), written under `UPLOAD_DIR` with a content-immutable UUID key (`products/<uuid>.webp`), and the **key only** is persisted in `product_images` inside a transaction. Uploads are appended in order; the first image ever added becomes the **cover** (index 0).
 
 * **Method:** `POST`
-* **Path:** `/api/products/:product_id/image` *(admin — see [Auth](#-general-response-format))*
+* **Path:** `/api/products/:product_id/images` *(admin — see [Auth](#-general-response-format))*
 * **URL Params:** `product_id` (integer, required)
 * **Headers:** `Content-Type: multipart/form-data`
 * **Form field:** `image` (single file, required)
+* **Rate limit:** 30 uploads / 15 min / IP
 
 **Constraints (enforced by `uploadImage` middleware):**
 * Declared type must be `image/jpeg`, `image/png`, or `image/webp` — anything else is rejected before parsing completes.
 * Bytes are verified via magic-byte sniffing; spoofed uploads (e.g. an `.jpg` containing text) are rejected.
-* Max size 5 MB.
+* Max size 5 MB per file.
 
 **Behavior notes:**
 * The uploaded file never touches disk unvalidated (memory storage).
-* If the DB update fails after saving, the just-saved file is removed (no orphans).
-* Archiving a product (§1.5) deletes its stored image file after commit; archived/missing products reject uploads with the same `404` contract as §1.4.
+* If the DB insert fails after saving, the just-saved file is removed (no orphans).
+* A `409` is returned when the product already has 5 images (pre-checked and re-enforced by a DB CHECK + unique constraint against concurrent-upload races).
+* Archiving a product (§1.5) deletes its gallery rows and all stored files after commit.
 * Images are served publicly at `/images/<key>` (7-day immutable cache); returned URLs are absolute when `PUBLIC_BASE_URL` is set, relative otherwise.
 
 #### Response `200 OK`
@@ -286,6 +301,10 @@ Stores a product image: normalizes it to WebP (max width 1600px, quality 82), wr
   "success": true,
   "data": {
     "product_id": 2,
+    "product_image_urls": [
+      "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp",
+      "http://localhost:3000/images/products/b2d1f3a2-8c44-4f1e-9a7b-5f6e2d3c4b5a.webp"
+    ],
     "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
   }
 }
@@ -299,21 +318,24 @@ Every `400` above is logged server-side (`[upload] rejected: { reason, code?, fi
 #### Response `404 Not Found`
 Same as §1.4 — `"Product was not found."` (missing) or `"Product is archived."`.
 
+#### Response `409 Conflict`
+```json
+{
+  "success": false,
+  "message": "This product already has the maximum of 5 images."
+}
+```
+
 ---
 
-### 1.7 Remove Product Image
+### 1.7 Remove a Gallery Image
 
-Clears a product's image: nulls `products.product_image` inside a transaction, then deletes the stored file **only after the commit succeeds**.
+Removes one image from the gallery by URL and reindexes the remaining rows so no sort gaps remain. If the cover is removed, the next image becomes the cover. The stored file is deleted **only after the commit succeeds**.
 
 * **Method:** `DELETE`
-* **Path:** `/api/products/:product_id/image` *(admin — see [Auth](#-general-response-format))*
+* **Path:** `/api/products/:product_id/images` *(admin)*
 * **URL Params:** `product_id` (integer, required)
-* **Request Body:** None
-
-**Behavior:**
-1. Missing or archived products reject with the same `404` contract as §1.4/§1.6.
-2. **Idempotent no-op:** if the product simply has no image, returns success anyway (`product_image_url: null`) — safe to call repeatedly.
-3. If two admins race, the file deletion is best-effort; a missing file is not an error.
+* **Query Params:** `url` (string, required) — the full public or relative URL of the image to remove, exactly as returned in `product_image_urls` (e.g. `?url=/images/products/7c9e6679-....webp`). Only URLs matching the `products/<uuid>.webp` namespace are accepted.
 
 #### Response `200 OK`
 ```json
@@ -321,13 +343,65 @@ Clears a product's image: nulls `products.product_image` inside a transaction, t
   "success": true,
   "data": {
     "product_id": 2,
+    "product_image_urls": [],
     "product_image_url": null
   }
 }
 ```
 
+#### Response `400 Bad Request`
+```json
+{
+  "success": false,
+  "message": "Unknown image URL."
+}
+```
+
 #### Response `404 Not Found`
-Same as §1.6 — `"Product was not found."` or `"Product is archived."`.
+`"Product was not found."` / `"Product is archived."` (§1.4 contract) or `"Image was not found."` when the URL does not belong to this product's gallery.
+
+---
+
+### 1.8 Reorder Gallery Images / Set Cover
+
+Replaces the gallery order with the given URL list. To make an image the cover, put it first.
+
+* **Method:** `PUT`
+* **Path:** `/api/products/:product_id/images/order` *(admin)*
+* **URL Params:** `product_id` (integer, required)
+* **Headers:** `Content-Type: application/json`
+
+#### Request Body
+```json
+{
+  "urls": [
+    "http://localhost:3000/images/products/b2d1f3a2-8c44-4f1e-9a7b-5f6e2d3c4b5a.webp",
+    "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
+  ]
+}
+```
+
+**Validation:** the list must contain **every** gallery image exactly once (same count, no duplicates, no unknown URLs) — otherwise `400`.
+
+#### Response `200 OK`
+Same shape as §1.6/§1.7 (`data.product_image_urls` reflects the new order).
+
+#### Response `400 Bad Request`
+`"Unknown image URL."` (a URL outside the `products/<uuid>.webp` namespace) or `"Invalid image order."` (set mismatch).
+
+#### Response `404 Not Found`
+Same as §1.4.
+
+---
+
+### 1.9 Legacy Single-Image Endpoints (compat)
+
+Kept for already-deployed frontends; the current SPA should prefer §1.6–§1.8.
+
+* **`POST /api/products/:product_id/image`** — multipart `image` field, same middleware constraints as §1.6. Semantics: **replace the cover** — the new file takes index 0 (inserted if the gallery is empty, overwriting the cover key otherwise); other gallery images keep their positions. The replaced cover file is deleted only after the commit succeeds. Rate-limited like §1.6.
+* **`DELETE /api/products/:product_id/image`** — **remove the cover** (and delete its file after commit). Idempotent no-op when the gallery is empty. Reindexes the remaining images.
+
+Both respond with the same `data` shape as §1.6–§1.8 (`product_id`, `product_image_urls`, `product_image_url`). Error contracts mirror §1.6/§1.7.
 
 ---
 

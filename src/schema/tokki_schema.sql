@@ -62,11 +62,22 @@ CREATE TABLE IF NOT EXISTS tokki_shop.products
     product_price numeric(9, 2) NOT NULL,
     product_description text NOT NULL,
     category character varying(100) NOT NULL DEFAULT 'Otros',
-    product_image text,
     qty_available integer NOT NULL DEFAULT 0,
     in_stock boolean NOT NULL DEFAULT FALSE,
     is_archived boolean NOT NULL DEFAULT FALSE,
     PRIMARY KEY (product_id)
+);
+
+-- 6b. PRODUCT IMAGES (Up to 5 gallery images per product; sort_order 0 = cover)
+CREATE TABLE IF NOT EXISTS tokki_shop.product_images
+(
+    image_id serial NOT NULL PRIMARY KEY,
+    product_id integer NOT NULL REFERENCES tokki_shop.products(product_id) ON DELETE CASCADE,
+    image_key character varying(255) NOT NULL,
+    sort_order integer NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT product_images_sort_range_check CHECK (sort_order BETWEEN 0 AND 4),
+    CONSTRAINT product_images_product_sort_unique UNIQUE (product_id, sort_order)
 );
 
 -- 7. ORDER ITEMS (Historic line items for each order)
@@ -83,7 +94,48 @@ COMMIT;
 
 -- 8. Migrations for pre-existing databases (idempotent)
 ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS category character varying(100) NOT NULL DEFAULT 'Otros';
-ALTER TABLE tokki_shop.products ADD COLUMN IF NOT EXISTS product_image text;
+
+-- PRODUCT IMAGES gallery (idempotent; runs fully for pre-existing DBs, no-ops on fresh installs)
+-- STEP 1 — create gallery table (safe while the previous backend is still running)
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS tokki_shop.product_images
+(
+    image_id serial NOT NULL PRIMARY KEY,
+    product_id integer NOT NULL REFERENCES tokki_shop.products(product_id) ON DELETE CASCADE,
+    image_key character varying(255) NOT NULL,
+    sort_order integer NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT product_images_sort_range_check CHECK (sort_order BETWEEN 0 AND 4),
+    CONSTRAINT product_images_product_sort_unique UNIQUE (product_id, sort_order)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_images_product_id ON tokki_shop.product_images(product_id);
+
+COMMIT;
+
+-- STEP 1b — backfill covers (archived products excluded: their image files
+-- were already deleted; re-run safe thanks to the NOT EXISTS guard)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'tokki_shop' AND table_name = 'products' AND column_name = 'product_image'
+    ) THEN
+        INSERT INTO tokki_shop.product_images (product_id, image_key, sort_order, created_at)
+        SELECT p.product_id, p.product_image, 0, CURRENT_TIMESTAMP
+        FROM tokki_shop.products p
+        WHERE p.product_image IS NOT NULL
+          AND p.is_archived = false
+          AND NOT EXISTS (
+              SELECT 1 FROM tokki_shop.product_images pi WHERE pi.product_id = p.product_id
+          );
+    END IF;
+END $$;
+
+-- STEP 2 — drop the legacy column (the previous backend SELECTs this column
+-- explicitly, so never run this against a database the old backend still serves)
+ALTER TABLE tokki_shop.products DROP COLUMN IF EXISTS product_image;
 
 ALTER TABLE tokki_shop.clients ADD COLUMN IF NOT EXISTS cedula character varying(12);
 ALTER TABLE tokki_shop.clients ADD COLUMN IF NOT EXISTS created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP;
