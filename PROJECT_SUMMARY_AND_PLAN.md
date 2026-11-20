@@ -216,9 +216,16 @@ Transitions `'pending'` -> `'approved'` when the shop owner confirms an order. N
 
 ---
 
-## 🚧 6. What's Next
+## 📊 6. Completed & Verified Features: Analytics API (`/api/analytics`)
 
-All originally planned endpoints are now implemented, and the backend is **live in production since 2026-11-13 (v0.10.0)** — that release shipped the multi-image product gallery (§3.G, §4). The forward-looking backlog lives in [`ROADMAP.md`](ROADMAP.md); agent-oriented project context lives in [`CONTEXT.md`](CONTEXT.md). Highlights of known gaps:
+### `GET /api/analytics/top-products` — Top Selling Products (Admin)
+Aggregates `SUM(oi.product_qty)::int AS units_sold`, `COUNT(DISTINCT oi.order_id)::int AS orders_count`, and `ROUND(SUM(oi.product_qty * oi.product_price), 2) AS total_revenue` from `tokki_shop.order_items` joined with `orders` (`status = 'approved'`) and `products` (`is_archived = false`), attaching ordered gallery URLs via `attachImageUrls`. Accepts validated query params `sort=units|revenue` (default `units`), `period=all|7d|30d|90d` (default `all`), and `limit=1..20` (default `5`) using 4 strictly literal SQL branches in `src/utils/topProducts.js`. Requires Clerk admin session (`requireAdmin`).
 
-* **Auth wired:** `clerkMiddleware()` + `requireAdmin` protect product mutations and all order management endpoints (`GET /api/orders`, `GET /api/orders/:id`, `GET /api/orders/client/:id`, cancel, approve). Guest checkout (`POST /api/orders`) and receipt (`GET /api/orders/receipt/:order_token`) remain public.
-* **Test coverage:** 153 unit tests across 12 suites — phone + cedula validation (`tests/validate.test.js`), field-type validation (`tests/product-validation.test.js`), image storage incl. gallery URL mapping (`storage.test.js`), upload middleware incl. rejection logging (`upload.test.js`), gallery orchestration: add / remove-by-URL / replace-cover / clear-cover / reorder (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`), params parsing (`params.test.js`), client & phone synchronization (`client-sync.test.js`), order creation validation (`orders.test.js`), order receipt resolution (`order-receipt.test.js`), health endpoint (`health.test.js`), and rate limiting (`rate-limit.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).
+---
+
+## 🚧 7. What's Next
+
+All originally planned endpoints are now implemented, and the backend has been **live in production since 2026-11-13 (v0.10.0)** — with `0.11.0` adding `GET /api/analytics/top-products`. The forward-looking backlog lives in [`ROADMAP.md`](ROADMAP.md); agent-oriented project context lives in [`CONTEXT.md`](CONTEXT.md). Highlights of known gaps:
+
+* **Auth wired:** `clerkMiddleware()` + `requireAdmin` protect product mutations, analytics, and all order management endpoints (`GET /api/orders`, `GET /api/orders/:id`, `GET /api/orders/client/:id`, cancel, approve). Guest checkout (`POST /api/orders`) and receipt (`GET /api/orders/receipt/:order_token`) remain public.
+* **Test coverage:** 168 unit tests across 13 suites — phone + cedula validation (`tests/validate.test.js`), field-type validation (`tests/product-validation.test.js`), image storage incl. gallery URL mapping (`storage.test.js`), upload middleware incl. rejection logging (`upload.test.js`), gallery orchestration: add / remove-by-URL / replace-cover / clear-cover / reorder (`product-image.test.js`), archive cleanup (`image-cleanup.test.js`), params parsing (`params.test.js`), client & phone synchronization (`client-sync.test.js`), order creation validation (`orders.test.js`), order receipt resolution (`order-receipt.test.js`), top-products analytics query parsing/aggregation/controller (`top-products.test.js`), health endpoint (`health.test.js`), and rate limiting (`rate-limit.test.js`). Controller/integration tests (supertest) are still pending (ROADMAP P2 #9).

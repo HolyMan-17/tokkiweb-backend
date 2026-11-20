@@ -80,7 +80,7 @@ Primary client identifier (`clients.cedula VARCHAR(12) UNIQUE NOT NULL`). Always
 Product images live on disk under `UPLOAD_DIR` as WebP files with content-immutable UUID keys shaped `products/<uuid>.webp` (sharp-normalized ≤1600px, q82). The DB stores **keys only** in `tokki_shop.product_images` (`image_key` + `sort_order` 0–4; max 5 per product, `UNIQUE (product_id, sort_order)` makes sort_order 0 the cover/portada) — never store absolute URLs; responses compose `product_image_urls` (ordered array, index 0 = cover) plus the legacy alias `product_image_url = product_image_urls[0] ?? null` at response time via `attachImageUrls`. Uploads go through `uploadImage` (`src/middleware/upload.js`): memory storage, 5 MB cap, declared-mime allowlist **plus magic-byte sniff** (headers are spoofable), and every `400` rejection is logged server-side (`[upload] rejected: {reason, ...}` — `createUploadImage(logger)` factory, injectable for tests). Gallery mutations live in `src/routes/products.js` + `src/controllers/c_products.js`: `POST /:product_id/images` appends one image (`409` at 5 — pre-checked and re-enforced by the DB CHECK + unique constraint against concurrent races), `DELETE /:product_id/images?url=` removes by URL and reindexes so no sort gaps remain, and `PUT /:product_id/images/order` reorders from a `{ urls }` body (must match the current set exactly; first URL = cover). The legacy single-image endpoints (`POST`/`DELETE /:product_id/image` — replace/clear the cover) are kept for already-deployed frontends. File lifecycle discipline: save file → transactional DB write → cleanup on failure; a removed/replaced/archived image's file is deleted only after its commit succeeds (best-effort unlink, log-and-continue). Removing the cover is idempotent — empty gallery → success no-op. Archiving a product deletes its gallery rows and all stored files post-commit. Static serving: `/images` mounts `UPLOAD_DIR` in `src/app.js` with 7-day immutable cache — safe because keys are content-immutable UUIDs.
 
 ### Versioning
-The backend went live in production on **2026-11-13** at `0.10.0` (that release shipped the multi-image product gallery). Versions stay in `0.x.y` (features/behavior changes bump `x`, fixes/docs bump `y`); a version-policy decision (e.g. moving to `1.x`) is pending owner approval. The version appears in `API_CONTRACT.md` and `package.json`; keep the two in sync on every bump.
+The backend went live in production on **2026-11-13** at `0.10.0` (that release shipped the multi-image product gallery); `0.11.0` adds `GET /api/analytics/top-products`. Versions stay in `0.x.y` (features/behavior changes bump `x`, fixes/docs bump `y`); a version-policy decision (e.g. moving to `1.x`) is pending owner approval. The version appears in `API_CONTRACT.md` and `package.json`; keep the two in sync on every bump.
 
 ### Code style
 ES Modules everywhere (`import`/`export`). Controllers hold SQL inline as template literals with `$1` params — no ORM, no query builder by design (Level 2 architecture). No comments-heavy style; match existing naming (`c_orders.js`, `c_products.js`). No linter is configured yet.
@@ -113,18 +113,21 @@ src/app.js                 express app: cors, json parsing, clerkMiddleware, /ap
 src/config/db.js           pool adapter: query() / getClient()
 src/middleware/auth.js     requireAdmin (Clerk role check) + users-table upsert helper
 src/middleware/upload.js   product-image upload gate: multer memory + mime/magic-byte validation
-src/routes/index.js        mounts /products, /orders
+src/routes/index.js        mounts /products, /orders, /analytics
 src/routes/products.js     product routes (CRUD + gallery images: add / remove-by-URL / reorder + legacy cover endpoints)
 src/routes/orders.js       order routes (incl. /receipt/:order_token, /client/:id, /:id/cancel, /:id/approve)
+src/routes/analytics.js    admin analytics routes (/top-products)
 src/controllers/c_products.js   catalog CRUD + soft delete + image gallery orchestration (addProductImage / removeProductImageByUrl / replaceCoverImage / clearCoverImage / reorderProductImages)
 src/controllers/c_orders.js     checkout single transaction (cedula lookup/upsert, clients_p_number sync, stock lock, order header & items), receipt & listing queries, lifecycle transitions
+src/controllers/c_analytics.js  top-products sales aggregation controller (createAnalyticsController)
 src/utils/validate.js      phone (E.164) + cedula normalization
 src/utils/clientSync.js    syncClientAndPhone helper (pure DI testable client & phone upsert)
 src/utils/orderReceipt.js  fetchOrderReceipt helper (pure DI testable public receipt resolver)
+src/utils/topProducts.js   parseTopProductsQuery + fetchTopProducts (4 strictly literal SQL queries for approved-order sales aggregation)
 src/utils/productValidation.js  strict field-type validators (products create/patch, order items)
 src/utils/params.js        parseIdParam (integer IDs) + parseUuidParam (UUIDv4 tokens)
 src/utils/storage.js       image storage: saveProductImage / deleteProductImage / cleanupProductImages / attachImageUrls / toPublicImageUrl / toImageKey (URL→image_key resolution used by remove-by-URL & reorder) / resolveUploadDir
 src/schema/tokki_schema.sql authoritative DDL (schema tokki_shop: clients, clients_p_number, users, orders, products, product_images, order_items)
 src/schema/migrations/      dated SQL migrations, each with its own runbook (2026-11-13-product-gallery.sql: STEP 1/1b pre-deploy, STEP 2 post-deploy)
-tests/                     unit tests: validate, product-validation, storage, upload, product-image, image-cleanup, params, client-sync, orders, order-receipt, health, rate-limit (153 tests across 12 suites)
+tests/                     unit tests: validate, product-validation, storage, upload, product-image, image-cleanup, params, client-sync, orders, order-receipt, top-products, health, rate-limit (168 tests across 13 suites)
 ```

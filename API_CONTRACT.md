@@ -2,7 +2,7 @@
 
 > **Versioning policy:** versions stay in `0.x.y` (features/behavior changes bump `x`, fixes/docs bump `y`). The first production deployment went live **2026-11-13** at `0.10.0`; a version-policy decision (e.g. moving to `1.x`) is pending owner approval.
 
-**Version:** 0.10.0 *(in production since 2026-11-13 — see versioning policy above)*  
+**Version:** 0.11.0 *(unreleased — adds `GET /api/analytics/top-products`; `0.10.0` in production since 2026-11-13)*  
 **Base URL:** `http://localhost:3000/api`  
 **Content-Type:** `application/json`
 **Auth:** Clerk session tokens. Admin endpoints require `Authorization: Bearer <token>` (token from the frontend's `useAuth().getToken()`), and the Clerk user must have `publicMetadata.role` of `owner` or `tech`. Public endpoints: product GETs + `POST /api/orders` (guest checkout) + `GET /api/orders/receipt/:order_token` (secure order confirmation receipt). Missing/invalid token on protected routes → `401`; authenticated but not admin → `403`, both in the standard envelope:
@@ -769,7 +769,58 @@ Returns the public order confirmation receipt for a given unguessable `order_tok
 
 ---
 
-## 🧭 3. Status Lifecycle Summary
+## 📊 3. Analytics API (`/api/analytics`)
+
+### 3.1 Top Products Ranking
+
+Aggregates real units sold and historical revenue across **approved** orders (`orders.status = 'approved'`) for active catalog products (`products.is_archived = false`), keeping active out-of-stock bestsellers visible for restock visibility.
+
+* **Method:** `GET`
+* **Path:** `/api/analytics/top-products` *(admin — see [Auth](#-general-response-format))*
+* **Query Params (all optional):**
+  * `sort`: `units` *(default)* | `revenue` — rank by units sold or total historical revenue (`SUM(oi.product_qty * oi.product_price)`).
+  * `period`: `all` *(default)* | `7d` | `30d` | `90d` — rolling lookback window over `orders.created_at`.
+  * `limit`: whole number `1`–`20` *(default `5`)*.
+* **Headers:** `Authorization: Bearer <token>`
+* **Request Body:** None
+
+#### Response `200 OK`
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "product_id": 12,
+      "product_name": "Bálsamo Labial Fresa",
+      "category": "Maquillaje",
+      "product_price": "5.00",
+      "qty_available": 2,
+      "in_stock": true,
+      "product_image_urls": [
+        "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp"
+      ],
+      "product_image_url": "http://localhost:3000/images/products/7c9e6679-7425-40de-944b-e07fc1f90ae7.webp",
+      "units_sold": 24,
+      "orders_count": 14,
+      "total_revenue": "120.00"
+    }
+  ]
+}
+```
+
+When no approved orders match the selected period, returns `{ "success": true, "data": [] }`.
+
+#### Response `400 Bad Request`
+* `{ "success": false, "message": "sort must be one of: units, revenue." }`
+* `{ "success": false, "message": "period must be one of: all, 7d, 30d, 90d." }`
+* `{ "success": false, "message": "limit must be a whole number between 1 and 20." }`
+
+#### Response `401 Unauthorized` / `403 Forbidden`
+Standard Clerk admin auth errors when missing/invalid token (`401`) or missing `owner`/`tech` role (`403`).
+
+---
+
+## 🧭 4. Status Lifecycle Summary
 
 ```
             create                /cancel              /approve
